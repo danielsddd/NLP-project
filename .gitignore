@@ -1,6 +1,7 @@
 # Environment variables (contains API keys!)
 .env
 *.env
+.env.example
 
 # API key files
 *_api_key*
