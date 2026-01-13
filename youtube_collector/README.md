@@ -70,21 +70,6 @@ python src/youtube_collector.py --api-key YOUR_KEY --video-id dQw4w9WgXcQ --max-
 
 ## API Quota Management
 
-YouTube Data API v3 has a daily quota of **10,000 units** (free tier).
-
-| Operation | Cost |
-|-----------|------|
-| search.list (find channels/videos) | 100 units |
-| commentThreads.list (get comments) | 1 unit |
-| channels.list (channel info) | 1 unit |
-
-### Strategy for 3,000 Comments
-
-- **Day 1**: Find channels (500 units) + Collect ~1,500 comments
-- **Day 2**: Collect remaining ~1,500 comments
-
-The collector includes rate limiting and will warn you if quota is exceeded.
-
 ## Output Format
 
 Comments are saved to `data/raw_youtube/comments.jsonl`:
@@ -140,26 +125,6 @@ Here are some channels to get you started (you'll need to find their IDs):
 - Verify the API key is correct
 - Ensure YouTube Data API is enabled in Google Cloud Console
 
-## For TAU Slurm Cluster
-
-```bash
-# On the cluster, save API key to a file (don't commit to git!)
-echo "YOUR_API_KEY" > ~/.youtube_api_key
-chmod 600 ~/.youtube_api_key
-
-# Run collection
-python src/youtube_collector.py --api-key-file ~/.youtube_api_key --test
-```
-
-## Next Steps
-
-After collecting comments:
-1. Run the **Teacher** (Gemini/GPT-4o) to generate silver labels
-2. Preprocess data for **Student** (AlephBERT) training
-3. Fine-tune on TAU Slurm cluster
-
-See the main project documentation for details.
-
 ## Files
 
 ```
@@ -177,4 +142,4 @@ youtube_collector/
 
 ## Support
 
-For issues specific to this project, contact the group members or post on the course forum.
+For issues specific to this project, contact the group members.
