@@ -1,0 +1,36 @@
+# Environment variables (contains API keys!)
+.env
+*.env
+
+# API key files
+*_api_key*
+*.key
+
+# Data files (too large for git)
+data/
+*.jsonl
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/

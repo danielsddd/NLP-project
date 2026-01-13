@@ -1,0 +1,16 @@
+# YouTube Comment Collector Dependencies
+# Group 11: Daniel Simanovsky & Roei Ben Artzi
+
+# Google API client for YouTube Data API v3
+google-api-python-client==2.111.0
+
+# For handling authentication (if needed later)
+google-auth==2.23.4
+google-auth-oauthlib==1.1.0
+google-auth-httplib2==0.1.1
+
+# Data handling
+python-dotenv==1.0.0
+
+# For development/testing
+pytest==7.4.3
