@@ -1,0 +1,122 @@
+# =============================================================================
+# CONFIGURATION FILE FOR YOUTUBE COMMENT COLLECTOR
+# =============================================================================
+# Group 11: Daniel Simanovsky & Roei Ben Artzi
+# NLP 2025a - Recipe Modification Extraction
+#
+# Edit this file to customize collection parameters.
+# The Python script will read this configuration.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# OUTPUT SETTINGS
+# -----------------------------------------------------------------------------
+output:
+  # Directory where all output files will be saved
+  # Use absolute path or relative to where you run the script
+  directory: "./data/raw_youtube"
+  
+  # Output filename for collected comments
+  comments_file: "comments.jsonl"
+  
+  # Statistics file
+  stats_file: "collection_stats.json"
+  
+  # Log file (set to null to disable file logging)
+  log_file: "./logs/collection.log"
+
+# -----------------------------------------------------------------------------
+# COLLECTION PARAMETERS
+# -----------------------------------------------------------------------------
+collection:
+  # Target number of comments to collect (approximate)
+  target_comments: 3000
+  
+  # Maximum videos to process per channel
+  max_videos_per_channel: 50
+  
+  # Maximum comments to fetch per video
+  max_comments_per_video: 100
+  
+  # Include reply comments (not just top-level)?
+  include_replies: true
+
+# -----------------------------------------------------------------------------
+# FILTERING SETTINGS
+# -----------------------------------------------------------------------------
+filtering:
+  # Minimum word count for a comment to be kept
+  min_words: 5
+  
+  # Require Hebrew characters in comment?
+  require_hebrew: true
+  
+  # Skip comments from video creator (usually pinned, not modifications)?
+  skip_creator_comments: true
+  
+  # Spam keywords to filter out (comment will be skipped if contains any)
+  spam_keywords:
+    - "הירשמו"        # Subscribe
+    - "לינק"          # Link
+    - "http"
+    - "https"
+    - "www."
+    - "לחצו כאן"      # Click here
+    - "bit.ly"
+    - "tinyurl"
+    - ".com"
+    - ".co.il"
+    - "קישור"         # Link
+    - "פרסומת"        # Advertisement
+
+# -----------------------------------------------------------------------------
+# API SETTINGS
+# -----------------------------------------------------------------------------
+api:
+  # Rate limiting - delay between API calls (seconds)
+  delay_between_videos: 0.5
+  delay_between_channels: 2.0
+  
+  # Retry settings for failed API calls
+  max_retries: 5
+  base_retry_delay: 1.0
+  
+  # Region code for localized search results
+  region_code: "IL"
+
+# -----------------------------------------------------------------------------
+# MODIFICATION DETECTION (for pre-filtering, optional)
+# -----------------------------------------------------------------------------
+# These keywords help identify comments likely to contain recipe modifications.
+# Comments WITHOUT these keywords are still collected, but this helps prioritize.
+modification_keywords:
+  quantity:
+    - "יותר"          # More
+    - "פחות"          # Less
+    - "כפול"          # Double
+    - "חצי"           # Half
+    - "הוספתי"        # I added
+    - "הורדתי"        # I reduced
+    - "כפלתי"         # I doubled
+  
+  substitution:
+    - "במקום"         # Instead of
+    - "החלפתי"        # I replaced
+    - "השתמשתי ב"     # I used
+    - "אפשר גם"       # Can also use
+    - "עובד גם עם"    # Also works with
+  
+  technique:
+    - "דקות"          # Minutes
+    - "שעות"          # Hours
+    - "מעלות"         # Degrees
+    - "תנור"          # Oven
+    - "כיריים"        # Stovetop
+    - "לערבב"         # To mix
+    - "לקפל"          # To fold
+  
+  addition:
+    - "הוספתי גם"     # I also added
+    - "שמתי גם"       # I also put
+    - "אפשר להוסיף"   # Can add
+    - "מומלץ להוסיף"  # Recommended to add

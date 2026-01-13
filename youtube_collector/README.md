@@ -1,145 +1,200 @@
-# YouTube Comment Collector for Recipe Modification Extraction
+# YouTube Comment Collector v2
 
 **Group 11: Daniel Simanovsky & Roei Ben Artzi**  
-**NLP 2025a, Tel Aviv University**
+**NLP 2025a - Recipe Modification Extraction**
 
-This module collects Hebrew comments from YouTube cooking channels for the purpose of extracting recipe modifications.
+A clean, modular YouTube comment collector with configuration files for easy customization.
 
-## Prerequisites
+## 📁 Files Structure
 
-1. **Python 3.8+**
-2. **YouTube Data API v3 key** (free)
+```
+youtube_collector_v2/
+├── collect.py          # Main script (the only code you run)
+├── config.yaml         # Settings: filtering, API limits, output paths
+├── channels.yaml       # Channel list: add your channels here
+├── requirements.txt    # Python dependencies
+└── data/
+    └── raw_youtube/    # Output directory (created automatically)
+        ├── comments.jsonl
+        └── collection_stats.json
+```
 
-## Quick Start
+## 🚀 Quick Start
 
-### Step 1: Get YouTube API Key (One-Time Setup)
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project (or select existing)
-3. Go to **APIs & Services** → **Library**
-4. Search for **"YouTube Data API v3"** and click **Enable**
-5. Go to **APIs & Services** → **Credentials**
-6. Click **Create Credentials** → **API Key**
-7. Copy your API key
-
-### Step 2: Install Dependencies
+### 1. Install dependencies
 
 ```bash
-# Create virtual environment (recommended)
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
-### Step 3: Test Your Setup
+### 2. Test your API key
 
 ```bash
-# Replace YOUR_API_KEY with your actual key
-python test_api_setup.py YOUR_API_KEY
+python collect.py --api-key YOUR_KEY --test
 ```
 
-You should see output like:
-```
-============================================================
-YOUTUBE API SETUP TEST
-============================================================
-✓ Successfully connected to YouTube API
-✓ Found 3 channels
-✓ Found video: עוגת שוקולד...
-✓ Found 5 comment threads
-✓ ALL TESTS PASSED - API IS READY TO USE!
-```
-
-### Step 4: Collect Comments
+### 3. Find Hebrew cooking channels
 
 ```bash
-# Test mode (minimal collection, ~5 comments)
-python src/youtube_collector.py --api-key YOUR_KEY --test
+python collect.py --api-key YOUR_KEY --discover "מתכונים בישול"
+```
 
-# Search for Hebrew cooking channels
-python src/youtube_collector.py --api-key YOUR_KEY --search-query "מתכונים בישול"
+### 4. Add channels to `channels.yaml`
+
+```yaml
+channels:
+  - name: "שם הערוץ"
+    id: "UC_PASTE_ID_HERE"      # From discover output
+    active: true
+    category: "cooking"
+```
+
+### 5. Collect comments
+
+```bash
+python collect.py --api-key YOUR_KEY --collect
+```
+
+## 📝 What Data Is Collected?
+
+**Only what's needed for the NLP project:**
+
+| Field | Example | Why We Need It |
+|-------|---------|----------------|
+| `text` | `"הוספתי יותר סוכר והיה מעולה"` | **Main input for extraction** |
+| `like_count` | `15` | **Ranking module** (social signal) |
+| `video_title` | `"עוגת שוקולד מושלמת"` | Context: which recipe |
+| `channel_title` | `"השף הביתי"` | Context: which channel |
+| `video_id` | `"abc123"` | Group comments by recipe |
+| `comment_id` | `"Ugw..."` | Deduplication only |
+| `word_count` | `5` | Pre-computed for filtering |
+| `has_modification_keyword` | `true` | Pre-detected keywords |
+| `detected_keywords` | `["הוספתי", "יותר"]` | Which keywords found |
+
+**NOT collected (unnecessary for NLP):** Author info, timestamps, reply relationships
+
+## ⚙️ Configuration Files
+
+### `config.yaml` - Settings
+
+Edit this to change:
+- **Output paths**: Where files are saved
+- **Collection limits**: Max videos, comments per video
+- **Filtering**: Minimum words, Hebrew requirement, spam keywords
+- **API settings**: Retry limits, delays
+
+### `channels.yaml` - Channel List
+
+Edit this to:
+- Add new channels (set `active: true`)
+- Disable channels (set `active: false`)
+- Organize by category
+
+## 📋 Commands Reference
+
+| Command | Description |
+|---------|-------------|
+| `--test` | Test API connection |
+| `--discover "query"` | Search for channels |
+| `--channel UC...` | Collect from one channel |
+| `--video VIDEO_ID` | Collect from one video |
+| `--collect` | Collect from all active channels |
+
+### Examples
+
+```bash
+# Test API
+python collect.py --api-key YOUR_KEY --test
+
+# Search for baking channels
+python collect.py --api-key YOUR_KEY --discover "אפייה ביתית"
+
+# Collect from a specific video (for testing)
+python collect.py --api-key YOUR_KEY --video dQw4w9WgXcQ
 
 # Collect from a specific channel
-python src/youtube_collector.py --api-key YOUR_KEY --channel-id UC... --max-videos 10
+python collect.py --api-key YOUR_KEY --channel UCxxxxxxxxxxxxxxx
 
-# Collect from a specific video
-python src/youtube_collector.py --api-key YOUR_KEY --video-id dQw4w9WgXcQ --max-comments 50
+# Full collection from all configured channels
+python collect.py --api-key YOUR_KEY --collect
 ```
 
-## API Quota Management
+## 📊 Output Files
 
-## Output Format
+### `comments.jsonl`
 
-Comments are saved to `data/raw_youtube/comments.jsonl`:
+One JSON object per line:
 
 ```json
-{"comment_id": "Ugw123...", "video_id": "abc123", "video_title": "עוגת שוקולד מושלמת", "channel_id": "UC...", "channel_title": "השף הביתי", "text": "הוספתי קצת יותר סוכר והיה מעולה!", "author": "משתמש", "author_channel_id": "UC...", "like_count": 15, "published_at": "2024-03-15T10:30:00Z", "updated_at": "2024-03-15T10:30:00Z", "reply_count": 2, "is_reply": false, "parent_id": null}
+{"comment_id": "Ugw...", "video_id": "abc", "text": "הוספתי יותר סוכר והיה מעולה", "like_count": 15, "reply_count": 2, "has_modification_keyword": true, "detected_keywords": ["הוספתי", "יותר"], ...}
 ```
 
-## Finding Channel IDs
+### `collection_stats.json`
 
-Channel IDs are needed to collect comments. Here's how to find them:
+Statistics from the collection run:
 
-### Method 1: Use the Search Feature
-```bash
-python src/youtube_collector.py --api-key YOUR_KEY --search-query "בישול ישראלי"
+```json
+{
+  "channels_processed": 5,
+  "videos_processed": 127,
+  "comments_found": 4521,
+  "comments_kept": 2847,
+  "comments_filtered": 1674,
+  "api_calls": 312,
+  "filter_reasons": {
+    "no_hebrew": 892,
+    "too_short": 523,
+    "spam": 241,
+    "creator_comment": 18
+  }
+}
 ```
 
-### Method 2: From Channel URL
-- If URL is `youtube.com/channel/UCxxxxxx`, the ID is `UCxxxxxx`
-- If URL is `youtube.com/@username`, use the search feature to find the ID
+## 💡 Tips for Efficient Collection
 
-### Method 3: Browser Developer Tools
-1. Go to the channel page
-2. Press F12 (Developer Tools)
-3. Search for `channelId` in the page source
+1. **Test with one video first**
+   ```bash
+   python collect.py --api-key YOUR_KEY --video VIDEO_ID
+   ```
 
-## Known Hebrew Cooking Channels
+2. **Check API quota usage**
+   - Go to: Google Cloud Console → APIs & Services → YouTube Data API v3
+   - Check "Quotas" tab
 
-Here are some channels to get you started (you'll need to find their IDs):
+3. **Start with fewer videos/comments**
+   - Edit `config.yaml`:
+   ```yaml
+   collection:
+     max_videos_per_channel: 10  # Start small
+     max_comments_per_video: 50
+   ```
 
-- דנילה גרמון (baking)
-- השף הלבן (professional chef)
-- מתכונים לכל מצב (home cooking)
-- אפייה בריאה (healthy baking)
+4. **Add channels incrementally**
+   - Discover → Add 1-2 channels → Test → Add more
 
-## Troubleshooting
+## 🔧 Troubleshooting
+
+### "No comments found" / Empty output
+- Check if video has comments enabled
+- Try a different video/channel
+- Reduce `min_words` in config.yaml
 
 ### "API quota exceeded"
-- Wait until midnight Pacific Time (10 AM Israel time)
-- Or create a new Google Cloud project with a fresh quota
+- Wait until midnight Pacific Time
+- Or create a new Google Cloud project
 
-### "Comments disabled"
-- Some videos have comments disabled
-- The collector handles this gracefully and moves on
+### Comments not in Hebrew
+- Ensure `require_hebrew: true` in config.yaml
+- Try channels with more Hebrew speakers
 
-### "No Hebrew comments found"
-- Try different channels/videos
-- Lower the `min_words` filter
-- Set `require_hebrew=False` for testing
+## 📈 Quota Estimation
 
-### "Connection error"
-- Check your internet connection
-- Verify the API key is correct
-- Ensure YouTube Data API is enabled in Google Cloud Console
+| Operation | Cost | For 3,000 comments |
+|-----------|------|-------------------|
+| Search channels | 100 | ~500 (one-time) |
+| Get videos | 100 | ~2,000 |
+| Get comments | 1 | ~500 |
 
-## Files
+Daily quota: 10,000 units → Easily achievable in one day!
 
-```
-youtube_collector/
-├── README.md                    # This file
-├── requirements.txt             # Python dependencies
-├── test_api_setup.py            # Quick API test script
-├── src/
-│   └── youtube_collector.py     # Main collector module
-└── data/
-    └── raw_youtube/             # Output directory (created automatically)
-        ├── comments.jsonl       # Collected comments
-        └── collection_stats.json # Collection statistics
-```
-
-## Support
-
-For issues specific to this project, contact the group members.
+---

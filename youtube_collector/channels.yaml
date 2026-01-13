@@ -1,0 +1,96 @@
+# =============================================================================
+# HEBREW COOKING CHANNELS FOR COMMENT COLLECTION
+# =============================================================================
+# Group 11: Daniel Simanovsky & Roei Ben Artzi
+# NLP 2025a - Recipe Modification Extraction
+#
+# HOW TO USE:
+# 1. Set 'active: true' for channels you want to collect from
+# 2. Run: python collect.py --discover   to find more channels
+# 3. Add new channels following the format below
+#
+# HOW TO FIND CHANNEL IDs:
+# Method 1: Use the discover feature
+#   python collect.py --discover "בישול מתכונים"
+#
+# Method 2: From YouTube URL
+#   - URL: youtube.com/channel/UCxxxxxxx → ID is "UCxxxxxxx"
+#   - URL: youtube.com/@username → Use discover feature to get ID
+#
+# Method 3: Browser DevTools
+#   - Go to channel page → F12 → Search for "channelId" in source
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# CHANNELS TO COLLECT FROM
+# -----------------------------------------------------------------------------
+# Set 'active: true' to include in collection, 'active: false' to skip
+
+channels:
+  # -------------------------------------------------------------------------
+  # EXAMPLE FORMAT (replace with real channels you find)
+  # -------------------------------------------------------------------------
+  
+  # - name: "שם הערוץ בעברית"           # Channel name (for your reference)
+  #   id: "UCxxxxxxxxxxxxxxxxxx"        # YouTube channel ID (starts with UC)
+  #   active: true                      # Set to true to collect from this channel
+  #   category: "baking"                # Optional: baking, cooking, chef, healthy
+  #   notes: "Popular baking channel"   # Optional: your notes
+  
+  # -------------------------------------------------------------------------
+  # DISCOVERED CHANNELS (add channels you find here)
+  # -------------------------------------------------------------------------
+  
+  # Run: python collect.py --discover "מתכונים" to find channels
+  # Then add them below:
+  
+  - name: "Placeholder - Replace with real channel"
+    id: "UC_REPLACE_WITH_REAL_ID"
+    active: false
+    category: "cooking"
+    notes: "Find real channels using --discover feature"
+
+# -----------------------------------------------------------------------------
+# SEARCH QUERIES FOR DISCOVERING CHANNELS
+# -----------------------------------------------------------------------------
+# Use these queries with: python collect.py --discover "query"
+
+discovery_queries:
+  - "מתכונים בישול"          # Recipes cooking
+  - "אפייה ביתית"            # Home baking
+  - "בישול ישראלי"           # Israeli cooking
+  - "עוגות ומאפים"           # Cakes and pastries
+  - "מתכונים קלים"           # Easy recipes
+  - "שף ישראלי"              # Israeli chef
+  - "בישול בריא"             # Healthy cooking
+  - "קינוחים"                # Desserts
+  - "ארוחות משפחתיות"        # Family meals
+  - "מתכונים לשבת"           # Shabbat recipes
+
+# -----------------------------------------------------------------------------
+# CHANNEL SELECTION CRITERIA
+# -----------------------------------------------------------------------------
+# When choosing channels, prioritize:
+#
+# 1. COMMENT ACTIVITY
+#    - Channels with many comments per video
+#    - Active community that discusses recipes
+#
+# 2. RECIPE CONTENT
+#    - Clear recipe videos (not vlogs)
+#    - Specific dishes with ingredients/steps
+#
+# 3. HEBREW CONTENT
+#    - Hebrew-speaking creator
+#    - Hebrew comments (not English tourists)
+#
+# 4. MODIFICATION POTENTIAL
+#    - Home cooking (people modify these more)
+#    - Common ingredients (easier to substitute)
+#    - Baking (precise, people share adjustments)
+#
+# AVOID:
+#    - Restaurant reviews (no recipes to modify)
+#    - Mukbang/eating videos (comments are reactions, not modifications)
+#    - Very professional/complex recipes (fewer home modifications)
+# =============================================================================
