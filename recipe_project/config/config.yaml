@@ -1,0 +1,64 @@
+# =============================================================================
+# Project Configuration
+# =============================================================================
+# Recipe Modification Extraction
+# Group 11: Daniel Simanovsky & Roei Ben Artzi
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Paths (relative to project root)
+# -----------------------------------------------------------------------------
+paths:
+  data:
+    raw_youtube: "data/raw_youtube"
+    silver_labels: "data/silver_labels"
+    processed: "data/processed"
+    gold_validation: "data/gold_validation"
+  models:
+    checkpoints: "models/checkpoints"
+    baselines: "models/baselines"
+  outputs:
+    logs: "logs"
+    results: "results"
+
+# -----------------------------------------------------------------------------
+# Teacher Model (Silver Label Generation)
+# -----------------------------------------------------------------------------
+teacher:
+  provider: "gemini"  # Options: "gemini", "openai"
+  gemini:
+    model: "gemini-1.5-pro"
+    temperature: 0.0
+  openai:
+    model: "gpt-4o"
+    temperature: 0.0
+
+# -----------------------------------------------------------------------------
+# Student Model (AlephBERT)
+# -----------------------------------------------------------------------------
+student:
+  model_name: "onlplab/alephbert-base"
+  num_labels: 9  # BIO scheme
+  max_seq_length: 128
+  
+  training:
+    epochs: 5
+    batch_size: 16
+    learning_rate: 2.0e-5
+    warmup_ratio: 0.1
+    weight_decay: 0.01
+    fp16: true
+
+# -----------------------------------------------------------------------------
+# Aspects (Modification Categories)
+# -----------------------------------------------------------------------------
+aspects:
+  - SUBSTITUTION  # Replacing ingredients
+  - QUANTITY      # Modifying amounts
+  - TECHNIQUE     # Cooking method changes
+  - ADDITION      # Adding new ingredients
+
+# -----------------------------------------------------------------------------
+# Reproducibility
+# -----------------------------------------------------------------------------
+seed: 42
