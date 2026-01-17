@@ -74,7 +74,6 @@ cp .env.example .env
 
 ```bash
 # Step 1: Collect YouTube comments
-# (Use your existing collector in youtube_collector/)
 python youtube_collector/collect.py --api-key $YOUTUBE_API_KEY --collect
 
 # Step 2: Generate silver labels
@@ -105,13 +104,14 @@ python -m src.evaluation.evaluate \
 
 ### Step 1: Data Collection (YouTube)
 
-Your existing `youtube_collector/` handles this. Key files:
+`youtube_collector/` handles this. Key files:
 - `config.yaml` - Collection settings
 - `channels.yaml` - Add Hebrew cooking channels here
 
 **Finding Channels:**
 ```bash
 python youtube_collector/collect.py --discover "מתכונים בישול"
+You may  try other search terms like "אפייה ביתית" (home baking), "בישול ביתי" (home cooking).
 ```
 
 ### Step 2: Teacher Labeling (Gemini/GPT-4o)
@@ -257,8 +257,8 @@ Remember to:
 
 ## 👥 Authors
 
-- Daniel Simanovsky (212238174)
-- Roei Ben Artzi (213498504)
+- Daniel Simanovsky 
+- Roei Ben Artzi 
 
 ## 📄 License
 
