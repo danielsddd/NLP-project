@@ -1,96 +1,257 @@
-# =============================================================================
-# HEBREW COOKING CHANNELS FOR COMMENT COLLECTION
-# =============================================================================
-# Group 11: Daniel Simanovsky & Roei Ben Artzi
-# NLP 2025a - Recipe Modification Extraction
-#
-# HOW TO USE:
-# 1. Set 'active: true' for channels you want to collect from
-# 2. Run: python collect.py --discover   to find more channels
-# 3. Add new channels following the format below
-#
-# HOW TO FIND CHANNEL IDs:
-# Method 1: Use the discover feature
-#   python collect.py --discover "בישול מתכונים"
-#
-# Method 2: From YouTube URL
-#   - URL: youtube.com/channel/UCxxxxxxx → ID is "UCxxxxxxx"
-#   - URL: youtube.com/@username → Use discover feature to get ID
-#
-# Method 3: Browser DevTools
-#   - Go to channel page → F12 → Search for "channelId" in source
-# =============================================================================
-
-# -----------------------------------------------------------------------------
-# CHANNELS TO COLLECT FROM
-# -----------------------------------------------------------------------------
-# Set 'active: true' to include in collection, 'active: false' to skip
-
 channels:
-  # -------------------------------------------------------------------------
-  # EXAMPLE FORMAT (replace with real channels you find)
-  # -------------------------------------------------------------------------
-  
-  # - name: "שם הערוץ בעברית"           # Channel name (for your reference)
-  #   id: "UCxxxxxxxxxxxxxxxxxx"        # YouTube channel ID (starts with UC)
-  #   active: true                      # Set to true to collect from this channel
-  #   category: "baking"                # Optional: baking, cooking, chef, healthy
-  #   notes: "Popular baking channel"   # Optional: your notes
-  
-  # -------------------------------------------------------------------------
-  # DISCOVERED CHANNELS (add channels you find here)
-  # -------------------------------------------------------------------------
-  
-  # Run: python collect.py --discover "מתכונים" to find channels
-  # Then add them below:
-  
-  - name: "Placeholder - Replace with real channel"
-    id: "UC_REPLACE_WITH_REAL_ID"
-    active: false
-    category: "cooking"
-    notes: "Find real channels using --discover feature"
 
-# -----------------------------------------------------------------------------
-# SEARCH QUERIES FOR DISCOVERING CHANNELS
-# -----------------------------------------------------------------------------
-# Use these queries with: python collect.py --discover "query"
+# =============================================================================
+# VERIFIED COOKING CHANNELS — active: true
+# These have been manually checked and confirmed as Hebrew cooking content
+# =============================================================================
+
+- name: kobi edri's food
+  id: UCaOPTGQ72rVCOrT7xHV9k5Q
+  active: true
+  category: cooking
+  notes: 167,000 subscribers | 1215 videos | VERIFIED cooking
+
+- name: BigDen תוכנית הבישול שלי
+  id: UCLmJy4v0T9qNX2W7Gw5sTUg
+  active: true
+  category: cooking
+  notes: 74,600 subscribers | 409 videos | VERIFIED cooking
+
+- name: רועי דהאן - Roy Dahan
+  id: UC4cW1Q6mNp-Qzde5V5qHaDQ
+  active: true
+  category: cooking
+  notes: 71,400 subscribers | 483 videos | VERIFIED cooking
+
+- name: שחר חן פודיק - Foodik
+  id: UCboRgkGd3lVVfH4TEy0S9Ug
+  active: true
+  category: cooking
+  notes: 94,100 subscribers | 1073 videos | VERIFIED cooking
+
+- name: מפלצת העוגיות-טוני משיח - TONI MASHIAH
+  id: UC-Ace2cJTSi5wiUOZcaWchw
+  active: true
+  category: cooking
+  notes: 57,100 subscribers | 410 videos | VERIFIED cooking
+
+- name: Shiran matetyahu שירן מתתיהו
+  id: UCRgcsgzlb2j8a1LefW7TRsQ
+  active: true
+  category: baking
+  notes: 181,000 subscribers | 466 videos | VERIFIED baking
+
+- name: פינת האוכל של סיון
+  id: UCnR3T6_yRxYwtPYvrCtlXmQ
+  active: true
+  category: cooking
+  notes: 75,500 subscribers | 595 videos | VERIFIED cooking
+
+- name: חן במטבח
+  id: UCc0zfbjbWVBsjeMCp4ZRh6Q
+  active: true
+  category: cooking
+  notes: 220,000 subscribers | 942 videos | VERIFIED cooking
+
+- name: נעמה קדוש naama kadosh
+  id: UCZ3i-27X5eF4IUdbJmBaGgA
+  active: true
+  category: cooking
+  notes: 57,200 subscribers | 684 videos | VERIFIED cooking
+
+- name: אור שפיץ - העוגות של אור
+  id: UCdyE8cULjLr4pxNcQfkTvrA
+  active: true
+  category: baking
+  notes: 58,300 subscribers | 154 videos | VERIFIED baking
+
+- name: The Cooking Foodie - Israel
+  id: UCau6yGBJgwDHZhjyQ48Zgew
+  active: true
+  category: baking
+  notes: 83,900 subscribers | 788 videos | VERIFIED baking
+
+- name: Ben Shai
+  id: UChmK8Hq3O7Ugkt0ZVn-CVEA
+  active: true
+  category: cooking
+  notes: 89,900 subscribers | 545 videos | VERIFIED cooking
+
+- name: בקלי קלות ליהי קרויץ -מטבח בקלי קלות -המותג המקורי
+  id: UCYRjRbFiLOyKr89dryIDobw
+  active: true
+  category: baking
+  notes: 190,000 subscribers | 2539 videos | VERIFIED baking
+
+- name: פודי - Foody
+  id: UCy_lqFqTpf7HTiv3nNT2SxQ
+  active: true
+  category: cooking
+  notes: 124,000 subscribers | 4874 videos | VERIFIED cooking
+
+- name: itay edri
+  id: UCwyhjk0dj2qTbtIkeqidS0Q
+  active: true
+  category: cooking
+  notes: 51,800 subscribers | 350 videos | VERIFIED cooking
+
+- name: רובי מיכאל - Rubi Michael
+  id: UCWkr-jAvT8CX29QYCIn4uDw
+  active: true
+  category: cooking
+  notes: 51,300 subscribers | 1146 videos | VERIFIED cooking
+
+- name: נועם זיגדון
+  id: UCigf3LCe_lKjZEcpEsfapdg
+  active: true
+  category: cooking
+  notes: 44,900 subscribers | 983 videos | VERIFIED cooking
+
+- name: קורל חוטה
+  id: UC3e3v-BQixdL5j-kmLNR9Vg
+  active: true
+  category: cooking
+  notes: 32,200 subscribers | 262 videos | VERIFIED cooking
+
+- name: הפרוייקט של בוזגלו
+  id: UCjBZdwHHCJqcPNT4r4PkLsw
+  active: true
+  category: cooking
+  notes: 19,900 subscribers | 448 videos | VERIFIED cooking
+
+- name: לבשל עם שרה
+  id: UCb1kyb-5hXmc2cBN51ShltA
+  active: true
+  category: cooking
+  notes: 18,000 subscribers | 195 videos | VERIFIED cooking
+
+- name: נטלי לוין
+  id: UC24zeKglSXg7HY7BGQvbXGw
+  active: true
+  category: baking
+  notes: 11,800 subscribers | 259 videos | VERIFIED baking
+
+- name: foodsdictionary
+  id: UC38zXk8d0yVsHWvmeoAVcgw
+  active: true
+  category: healthy
+  notes: 11,500 subscribers | 244 videos | VERIFIED cooking
+
+- name: נלי ימפולסקי Nelly Yampolski
+  id: UC_FT2QK2J7YRGzOZIvRKgnA
+  active: true
+  category: cooking
+  notes: 10,800 subscribers | 294 videos | VERIFIED cooking
+
+- name: לינוי שטרית - מתכונים, טיפים וטריקים למטבח
+  id: UCMe6whTcQlhhC5uOGCXncdg
+  active: true
+  category: cooking
+  notes: 10,800 subscribers | 239 videos | VERIFIED cooking
+
+- name: עידיתוש מתכונים מומלצים
+  id: UCOq9GpfT6HDl1dxffiN8Liw
+  active: true
+  category: cooking
+  notes: 10,100 subscribers | 247 videos | VERIFIED cooking
+
+# =============================================================================
+# ADD NEW CHANNELS HERE after running --discover
+# =============================================================================
+
+# - name: "שם הערוץ"
+#   id: "UCxxxxxxxxxxxxxxxxxx"
+#   active: true
+#   category: cooking
+#   notes: "X,XXX subscribers | XX videos | VERIFIED cooking"
+
+
+# =============================================================================
+# DISABLED — NOT COOKING CHANNELS
+# =============================================================================
+
+- name: סולטיז
+  id: UCu4uBQqHxWidxWITvvcPU3g
+  active: false
+  category: cooking
+  notes: REMOVED - not a cooking channel
+
+- name: Noam Firuz
+  id: UCdTRr26_KZcZ4sDwtja5hEw
+  active: false
+  category: cooking
+  notes: REMOVED - vlog/entertainment not cooking
+
+- name: עומר לוי
+  id: UCBKl93KXEHgsOISVdSNVVng
+  active: false
+  category: cooking
+  notes: REMOVED - not a cooking channel
+
+- name: Full House
+  id: UCDnhyHDsgk7mXONiky5hS8w
+  active: false
+  category: cooking
+  notes: REMOVED - entertainment not cooking
+
+- name: Michal Matzov Vlogs
+  id: UCfLf911WZr2xQNgPEmpgzIw
+  active: false
+  category: cooking
+  notes: REMOVED - vlogs not cooking
+
+- name: Aaron Layani
+  id: UCrJjQBE-EUvqy-RcUZVTbrg
+  active: false
+  category: cooking
+  notes: REMOVED - not a cooking channel
+
+- name: DR. POTATO
+  id: UCmPd-UgdNWA78BHpLpgkjaw
+  active: false
+  category: cooking
+  notes: REMOVED - not a cooking channel
+
+- name: Or Toledano
+  id: UCnZNASIN61iAt81BHJ108NQ
+  active: false
+  category: cooking
+  notes: REMOVED - not a cooking channel
+
+
+# =============================================================================
+# DISCOVERY QUERIES
+# Use with: python collect.py --api-key YOUR_KEY --discover "QUERY"
+# =============================================================================
 
 discovery_queries:
-  - "מתכונים בישול"          # Recipes cooking
-  - "אפייה ביתית"            # Home baking
-  - "בישול ישראלי"           # Israeli cooking
-  - "עוגות ומאפים"           # Cakes and pastries
-  - "מתכונים קלים"           # Easy recipes
-  - "שף ישראלי"              # Israeli chef
-  - "בישול בריא"             # Healthy cooking
-  - "קינוחים"                # Desserts
-  - "ארוחות משפחתיות"        # Family meals
-  - "מתכונים לשבת"           # Shabbat recipes
-
-# -----------------------------------------------------------------------------
-# CHANNEL SELECTION CRITERIA
-# -----------------------------------------------------------------------------
-# When choosing channels, prioritize:
-#
-# 1. COMMENT ACTIVITY
-#    - Channels with many comments per video
-#    - Active community that discusses recipes
-#
-# 2. RECIPE CONTENT
-#    - Clear recipe videos (not vlogs)
-#    - Specific dishes with ingredients/steps
-#
-# 3. HEBREW CONTENT
-#    - Hebrew-speaking creator
-#    - Hebrew comments (not English tourists)
-#
-# 4. MODIFICATION POTENTIAL
-#    - Home cooking (people modify these more)
-#    - Common ingredients (easier to substitute)
-#    - Baking (precise, people share adjustments)
-#
-# AVOID:
-#    - Restaurant reviews (no recipes to modify)
-#    - Mukbang/eating videos (comments are reactions, not modifications)
-#    - Very professional/complex recipes (fewer home modifications)
-# =============================================================================
+- אסאדו מתכון
+- שיפודי פרגיות מתכון
+- שווארמה ביתית מתכון
+- שניצל ביתי מתכון
+- קציצות בשר מתכון
+- נאגטס ביתי מתכון
+- לזניה ביתית מתכון
+- לחמניות באן מתכון
+- לחם ביתי מתכון
+- בצק שמרים מתכון
+- סינבון ביתי מתכון
+- פיתה ביתית מתכון
+- בייגלה פרצל מתכון
+- לחם מחמצת מתכון
+- סופגניות ביתיות מתכון
+- פחזניות מתכון
+- עוגת שוקולד מתכון
+- טירמיסו ביתי מתכון
+- מלבי מתכון
+- קראמבל תפוחים מתכון
+- עוגת גבינה מתכון
+- חומוס ביתי מתכון
+- פנקייק ביתי מתכון
+- כדורי פירה מתכון
+- צ'יפס ביתי מתכון
+- מתכונים ביתיים ישראלי
+- אפייה ביתית מתכונים
+- בישול ישראלי מתכונים
+- מתכונים לשבת
+- שף ביתי ישראלי

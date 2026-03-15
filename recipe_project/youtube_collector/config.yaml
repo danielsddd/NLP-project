@@ -30,13 +30,13 @@ output:
 # -----------------------------------------------------------------------------
 collection:
   # Target number of comments to collect (approximate)
-  target_comments: 3000
+  target_comments: 30000
   
   # Maximum videos to process per channel
   max_videos_per_channel: 50
   
   # Maximum comments to fetch per video
-  max_comments_per_video: 100
+  max_comments_per_video: 200
   
   # Include reply comments (not just top-level)?
   include_replies: true
@@ -85,38 +85,239 @@ api:
   region_code: "IL"
 
 # -----------------------------------------------------------------------------
-# MODIFICATION DETECTION (for pre-filtering, optional)
+# MODIFICATION DETECTION (for pre-filtering and keyword tagging)
 # -----------------------------------------------------------------------------
-# These keywords help identify comments likely to contain recipe modifications.
-# Comments WITHOUT these keywords are still collected, but this helps prioritize.
+# Covers: past tense (what I did), recommendations, corrections, warnings.
+# Conjugation variants are included — Hebrew verbs change form heavily.
+# Comments WITHOUT these keywords are still collected, but flagged accordingly.
+
 modification_keywords:
+
+  # ---------------------------------------------------------------------------
+  # QUANTITY — changing amounts, measurements, ratios
+  # ---------------------------------------------------------------------------
   quantity:
-    - "יותר"          # More
-    - "פחות"          # Less
-    - "כפול"          # Double
-    - "חצי"           # Half
-    - "הוספתי"        # I added
-    - "הורדתי"        # I reduced
-    - "כפלתי"         # I doubled
-  
+    # More / Less
+    - "יותר"            # More
+    - "פחות"            # Less
+    - "הרבה יותר"       # A lot more
+    - "קצת יותר"        # A bit more
+    - "קצת פחות"        # A bit less
+    - "הרבה פחות"       # A lot less
+    # Ratios
+    - "כפול"            # Double
+    - "חצי"             # Half
+    - "שליש"            # Third
+    - "רבע"             # Quarter
+    - "פי שניים"        # Times two
+    - "פי שלושה"        # Times three
+    # Past tense actions
+    - "הוספתי"          # I added
+    - "הורדתי"          # I reduced
+    - "כפלתי"           # I doubled
+    - "הכפלתי"          # I doubled (alt. form)
+    - "הפחתתי"          # I decreased
+    - "הגדלתי"          # I increased
+    - "שיניתי את הכמות" # I changed the amount
+    - "הכמות"           # The amount / quantity
+    # Measurements
+    - "כף"              # Tablespoon
+    - "כפית"            # Teaspoon
+    - "כוס"             # Cup
+    - "גרם"             # Grams
+    - "קילו"            # Kilo
+    - "מיליליטר"        # Milliliter
+    - "ס״מ"             # cm (pan size)
+    - "פחית"            # Can
+    # Recommendations
+    - "תוסיפו יותר"     # Add more
+    - "תורידו את הכמות" # Reduce the amount
+    - "אל תוסיפו הרבה"  # Don't add too much
+    - "שווה להוסיף יותר" # Worth adding more
+
+  # ---------------------------------------------------------------------------
+  # SUBSTITUTION — replacing one ingredient with another
+  # ---------------------------------------------------------------------------
   substitution:
-    - "במקום"         # Instead of
-    - "החלפתי"        # I replaced
-    - "השתמשתי ב"     # I used
-    - "אפשר גם"       # Can also use
-    - "עובד גם עם"    # Also works with
-  
+    # Core substitution phrases
+    - "במקום"           # Instead of
+    - "בלי"             # Without
+    - "החלפתי"          # I replaced
+    - "החלפתי את"       # I replaced the
+    - "אפשר להחליף"     # You can replace
+    - "אפשר גם"         # Can also use
+    - "עובד גם עם"      # Also works with
+    - "עובד נהדר עם"    # Works great with
+    - "השתמשתי ב"       # I used
+    - "השתמשתי ב-"      # I used (with dash)
+    - "השתמשנו ב"       # We used
+    - "לקחתי"           # I took / I used
+    - "שמתי"            # I put
+    - "הוצאתי"          # I removed
+    - "ויתרתי על"       # I skipped / omitted
+    - "דילגתי על"       # I skipped
+    - "בלעדי"           # Without (alt.)
+    # Recommendation forms
+    - "אפשר גם להשתמש ב" # Can also use
+    - "מומלץ להחליף"    # Recommended to replace
+    - "אפשר להשמיט"     # Can omit
+    - "אפשר לוותר על"   # Can skip
+    - "תנסו עם"         # Try with
+    - "טעים גם עם"      # Tastes good with too
+    - "מנסה עם"         # Trying with
+    # Substitution targets
+    - "גרסה טבעונית"    # Vegan version
+    - "גרסה ללא גלוטן"  # Gluten-free version
+    - "גרסה בריאה"      # Healthy version
+    - "גרסה קלה"        # Light version
+    - "ללא לקטוז"       # Lactose-free
+    - "ללא סוכר"        # Sugar-free
+
+  # ---------------------------------------------------------------------------
+  # TECHNIQUE — changing method, order, equipment, temperature, time
+  # ---------------------------------------------------------------------------
   technique:
-    - "דקות"          # Minutes
-    - "שעות"          # Hours
-    - "מעלות"         # Degrees
-    - "תנור"          # Oven
-    - "כיריים"        # Stovetop
-    - "לערבב"         # To mix
-    - "לקפל"          # To fold
-  
+    # Time
+    - "דקות"            # Minutes
+    - "שעות"            # Hours
+    - "שעה"             # Hour
+    - "זמן"             # Time
+    - "יותר זמן"        # More time
+    - "פחות זמן"        # Less time
+    - "עוד כמה דקות"    # A few more minutes
+    - "קצר יותר"        # Shorter
+    - "ארוך יותר"       # Longer
+    # Temperature
+    - "מעלות"           # Degrees
+    - "חום"             # Heat
+    - "טמפרטורה"        # Temperature
+    - "חום גבוה"        # High heat
+    - "חום נמוך"        # Low heat
+    - "חום בינוני"      # Medium heat
+    - "יותר חם"         # Hotter
+    - "פחות חם"         # Less hot
+    # Equipment
+    - "תנור"            # Oven
+    - "כיריים"          # Stovetop
+    - "מיקרוגל"         # Microwave
+    - "מיקסר"           # Mixer
+    - "בלנדר"           # Blender
+    - "מחבת"            # Pan
+    - "סיר"             # Pot
+    - "מגש"             # Tray
+    # Cooking actions (past tense)
+    - "טגנתי"           # I fried
+    - "אפיתי"           # I baked
+    - "בישלתי"          # I cooked
+    - "ערבבתי"          # I mixed
+    - "קיפלתי"          # I folded
+    - "הקפצתי"          # I sautéed
+    - "הוצאתי מוקדם"    # I took out early
+    - "השארתי יותר"     # I left it longer
+    - "חיכיתי"          # I waited
+    - "צוננתי"          # I cooled
+    - "הקפאתי"          # I froze
+    # Technique recommendations
+    - "לערבב"           # To mix
+    - "לקפל"            # To fold
+    - "לאפות"           # To bake
+    - "לטגן"            # To fry
+    - "לבשל"            # To cook
+    - "אל תערבבו יותר מדי" # Don't overmix
+    - "צריך לערבב"      # Need to mix
+    - "עדיף לאפות"      # Better to bake
+    - "שווה לנסות"      # Worth trying
+
+  # ---------------------------------------------------------------------------
+  # ADDITION — adding something not in the original recipe
+  # ---------------------------------------------------------------------------
   addition:
-    - "הוספתי גם"     # I also added
-    - "שמתי גם"       # I also put
-    - "אפשר להוסיף"   # Can add
-    - "מומלץ להוסיף"  # Recommended to add
+    # Past tense
+    - "הוספתי גם"       # I also added
+    - "שמתי גם"         # I also put
+    - "הכנסתי גם"       # I also put in
+    - "הוספתי לתערובת"  # I added to the mix
+    - "הוספתי בסוף"     # I added at the end
+    - "הוספתי בהתחלה"   # I added at the start
+    - "הוספתי מעל"      # I added on top
+    # Recommendations
+    - "אפשר להוסיף"     # Can add
+    - "מומלץ להוסיף"    # Recommended to add
+    - "כדאי להוסיף"     # Worth adding
+    - "אפשר לשים"       # Can put
+    - "נהדר עם"         # Great with
+    - "מומלץ לשים מעל"  # Recommended to put on top
+    - "תנסו להוסיף"     # Try adding
+    - "אני תמיד מוסיף"  # I always add
+    - "אני תמיד מוסיפה" # I always add (f.)
+    - "אנחנו מוסיפים"   # We always add
+
+  # ---------------------------------------------------------------------------
+  # CORRECTION — fixing a mistake in the original video
+  # ---------------------------------------------------------------------------
+  correction:
+    - "טעות"            # Mistake
+    - "טעות בסרטון"     # Mistake in the video
+    - "לא נכון"         # Not correct
+    - "לא מדויק"        # Not accurate
+    - "הזמן לא נכון"    # The time is wrong
+    - "הכמות לא נכונה"  # The amount is wrong
+    - "צריך להיות"      # Should be
+    - "אמור להיות"      # Supposed to be
+    - "בעצם"            # Actually
+    - "למעשה"           # In fact
+    - "נראה לי שצריך"   # I think you need
+    - "חסר"             # Missing
+    - "חסרה"            # Missing (f.)
+    - "שכחת"            # You forgot
+    - "שכחתם"           # You (pl.) forgot
+    - "לא כתבת"         # You didn't write
+    - "לא ציינת"        # You didn't mention
+
+  # ---------------------------------------------------------------------------
+  # RESULT / OUTCOME — signals the person actually tried the recipe
+  # ---------------------------------------------------------------------------
+  result:
+    - "יצא לי"          # Mine came out
+    - "יצא לנו"         # Ours came out
+    - "ניסיתי"          # I tried
+    - "ניסיתי את המתכון" # I tried the recipe
+    - "הכנתי"           # I made
+    - "הכנתי את זה"     # I made this
+    - "עשיתי"           # I did / I made
+    - "הכנתי כבר"       # I already made
+    - "עשיתי פעמיים"    # I made it twice
+    - "יצא מעולה"       # Came out great
+    - "יצא טעים"        # Came out tasty
+    - "יצא קצת יבש"     # Came out a bit dry
+    - "יצא קצת מתוק"    # Came out a bit sweet
+    - "יצא קצת מלוח"    # Came out a bit salty
+    - "לא יצא טוב"      # Didn't come out well
+    - "נשרף לי"         # Mine burned
+    - "לא תפח"          # Didn't rise
+    - "נפל לי"          # Mine collapsed
+    - "היה צריך"        # Should have been
+
+  # ---------------------------------------------------------------------------
+  # WARNING / TIP — advice to future cooks
+  # ---------------------------------------------------------------------------
+  warning:
+    - "שימו לב"         # Pay attention
+    - "זהירות"          # Caution
+    - "אל תוסיפו"       # Don't add
+    - "אל תערבבו"       # Don't mix
+    - "אל תאפו יותר מ"  # Don't bake more than
+    - "אל תבשלו יותר מ" # Don't cook more than
+    - "חשוב"            # Important
+    - "חשוב מאוד"       # Very important
+    - "טיפ"             # Tip
+    - "טיפ קטן"         # Small tip
+    - "עצה"             # Advice
+    - "המלצה"           # Recommendation
+    - "אני ממליץ"       # I recommend (m.)
+    - "אני ממליצה"      # I recommend (f.)
+    - "ממליץ בחום"      # Highly recommend
+    - "כדאי לדעת"       # Worth knowing
+    - "שווה לדעת"       # Worth knowing (alt.)
+    - "הייתי ממליץ"     # I would recommend (m.)
+    - "הייתי ממליצה"    # I would recommend (f.)
