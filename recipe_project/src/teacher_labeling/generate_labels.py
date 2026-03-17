@@ -1,34 +1,45 @@
 """
-Teacher Labeling Module
-=======================
+Teacher Labeling Module v3 — Thread-Level
+==========================================
 Group 11: Daniel Simanovsky & Roei Ben Artzi
 NLP 2025a - Recipe Modification Extraction
 
-Uses Gemini 1.5 Pro (or GPT-4o) to generate silver labels for training data.
-This implements the "Teacher" in our Teacher-Student distillation approach.
+MAJOR CHANGE IN v3:
+  Labels are generated at the THREAD level, not the comment level.
+  A thread = top comment + all replies.
+
+  Core rule enforced in the prompt:
+    "A question comment is NEVER the signal.
+     The REPLY to that question is the signal.
+     The question is only context."
+
+  New output fields:
+    - target         : the ingredient/technique in the recipe being modified
+    - alternative    : the suggested replacement or modification value
+    - signal_type    : confirmed / creator_validated / negative / mixed / suggestion
+    - confidence     : 0.0–1.0
+    - quantity_note  : "אותה כמות" etc. if mentioned
+    - warning        : negative aspect if mixed
+    - output_note    : READY-TO-DISPLAY Hebrew string for inject.py
+
+BUG FIX (v3):
+  - channel_id now passed through to output (was missing in v1/v2)
+  - Thread-level context prevents questions being labeled as modifications
 
 Usage:
-    # Using Gemini (recommended - free tier available)
+    # Using Gemini (recommended)
     python -m src.teacher_labeling.generate_labels \\
-        --input  data/raw_youtube/comments.jsonl \\
+        --input data/raw_youtube/threads.jsonl \\
         --provider gemini \\
         --api-key YOUR_GOOGLE_API_KEY
 
-    # Using GPT-4o (backup)
+    # Resume interrupted run (skips already-labeled threads)
     python -m src.teacher_labeling.generate_labels \\
-        --input  data/raw_youtube/comments.jsonl \\
-        --provider openai \\
-        --api-key YOUR_OPENAI_API_KEY
+        --input data/raw_youtube/threads.jsonl
 
-    # Resume interrupted run (skips already-labeled comments)
+    # Test with 50 threads
     python -m src.teacher_labeling.generate_labels \\
-        --input  data/raw_youtube/comments.jsonl \\
-        --provider gemini
-
-    # Process a limited batch (for testing)
-    python -m src.teacher_labeling.generate_labels \\
-        --input  data/raw_youtube/comments.jsonl \\
-        --limit  100
+        --input data/raw_youtube/threads.jsonl --limit 50
 """
 
 import json
@@ -38,11 +49,10 @@ import re
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, field
 from datetime import datetime
 from tqdm import tqdm
 
-# Try to import Google AI
 try:
     import google.generativeai as genai
     GEMINI_AVAILABLE = True
@@ -50,7 +60,6 @@ except ImportError:
     GEMINI_AVAILABLE = False
     print("⚠️  google-generativeai not installed. Run: pip install google-generativeai")
 
-# Try to import OpenAI
 try:
     from openai import OpenAI
     OPENAI_AVAILABLE = True
@@ -64,372 +73,397 @@ except ImportError:
 
 @dataclass
 class Modification:
-    """A single extracted recipe modification span."""
-    span: str                        # EXACT text span from the comment (Hebrew preserved)
-    aspect: str                      # SUBSTITUTION | QUANTITY | TECHNIQUE | ADDITION
-    sentiment: str = "constructive"  # constructive (suggestion) | positive (praise)
-    start_char: Optional[int] = None # Character-level start index in original comment
-    end_char: Optional[int] = None   # Character-level end index in original comment
+    """A single extracted recipe modification from a thread."""
+    # ── Span (for BIO alignment) ─────────────────────────────────────────────
+    span:       str           # EXACT text from comment (Hebrew preserved)
+    aspect:     str           # SUBSTITUTION | QUANTITY | TECHNIQUE | ADDITION
+    sentiment:  str = "constructive"
+    start_char: Optional[int] = None
+    end_char:   Optional[int] = None
+
+    # ── Semantic fields (new in v3) ───────────────────────────────────────────
+    target:       str = ""    # ingredient/technique in the recipe (e.g. "קמח")
+    alternative:  str = ""    # the modification value (e.g. "קמח כוסמין")
+    signal_type:  str = "confirmed"
+    #   confirmed         → user stated they did it + positive result
+    #   creator_validated → channel owner confirmed in reply
+    #   multi_user        → multiple users confirmed same thing
+    #   negative          → tried it and it failed / not recommended
+    #   mixed             → conflicting replies (some good, some bad)
+    #   suggestion        → suggested but unconfirmed
+    confidence:   float = 0.0
+    quantity_note: str = ""   # "אותה כמות", "כפול", etc.
+    warning:      str = ""    # negative note for mixed signal_type
+
+    # ── Ready-to-display (new in v3) ─────────────────────────────────────────
+    output_note:  str = ""
+    # Full Hebrew string ready to inject into recipe, e.g.:
+    # "אפשר להחליף בקמח כוסמין באותה כמות (עלול לצאת קצת דחוס)"
+    # "לא מומלץ קמח ללא גלוטן — הלחם לא יתפח"
 
 
 @dataclass
 class TeacherOutput:
-    """Output from the Teacher model for a single comment."""
-    modifications: List[Modification] = field(default_factory=list)
-    has_modification: bool = False
+    modifications:     List[Modification] = field(default_factory=list)
+    has_modification:  bool = False
     overall_sentiment: str = "neutral"
-    raw_response: Optional[str] = None
-    error: Optional[str] = None      # Set if the API call or JSON parse failed
-
-
-@dataclass
-class LabeledComment:
-    """
-    A comment paired with its silver labels from the Teacher.
-
-    NOTE: This dataclass is used for type documentation purposes.
-          The actual JSONL output in process_file uses a plain dict
-          for flexibility (to avoid breaking changes as fields evolve).
-    """
-    # ── Original comment fields ───────────────────────────────────────────────
-    comment_id:    str
-    video_id:      str
-    text:          str
-    like_count:    int
-    video_title:   str
-    channel_title: str
-    channel_id:    str = ""   # YouTube channel ID (forms channel URL)
-
-    # ── Teacher labels ────────────────────────────────────────────────────────
-    teacher_output: Optional[TeacherOutput] = None
-
-    # ── Provenance ────────────────────────────────────────────────────────────
-    labeled_at:    str = ""
-    teacher_model: str = ""
+    source:            str = ""   # e.g. "question_answered_positively"
+    raw_response:      Optional[str] = None
+    error:             Optional[str] = None
 
 
 # =============================================================================
-# PROMPTS
+# SYSTEM PROMPT  (v3 — thread-aware with question rules)
 # =============================================================================
 
 SYSTEM_PROMPT = """You are an expert culinary NLP assistant specializing in Hebrew text analysis.
-Your task is to analyze user comments from cooking videos and extract recipe modifications.
+Your task is to analyze YouTube comment THREADS from cooking videos and extract recipe modifications.
 
-For each comment, identify ALL modification suggestions and extract:
-1. The EXACT text span containing the modification (preserve original Hebrew text exactly)
-2. The aspect category: SUBSTITUTION, QUANTITY, TECHNIQUE, or ADDITION
-3. Whether it's constructive (suggestion/correction) or positive (praise)
+A thread contains:
+  - [TOP COMMENT]: the comment posted by a viewer
+  - [REPLY N]: replies to that comment (may include the video creator)
 
-ASPECT DEFINITIONS:
-- SUBSTITUTION: Replacing one ingredient with another (e.g., "במקום חמאה השתמשתי בשמן")
-- QUANTITY:     Modifying amounts (e.g., "הוספתי יותר סוכר", "כפול שום")
-- TECHNIQUE:    Changing cooking method, time, or temperature (e.g., "אפיתי 10 דקות יותר")
-- ADDITION:     Adding ingredients not in original recipe (e.g., "הוספתי גם קינמון")
+=== CRITICAL RULE: QUESTIONS vs MODIFICATIONS ===
 
-CRITICAL RULES:
-1. A comment may contain MULTIPLE modifications - extract ALL of them
-2. Extract the MINIMAL text span that captures the modification
-3. If spans are non-contiguous, list each separately
-4. Return empty modifications list [] if no modifications found
-5. Preserve Hebrew text EXACTLY as written (including typos)
-6. Do NOT include general praise like "מעולה" unless it's about a modification
+If the top comment is a QUESTION (ends with ? or contains האם/אפשר/כדאי):
 
-OUTPUT FORMAT (respond ONLY with valid JSON, no markdown):
+  RULE 1: The question itself is NEVER a modification. Extract from REPLIES only.
+          Use the question as context to understand what the replies refer to.
+
+  RULE 2: If there are NO replies, OR all replies are unhelpful
+          ("גם אני רוצה לדעת", emojis only, "לא יודע") →
+          return has_modification: false immediately. Do not invent a label.
+
+  RULE 3: NEGATIVE reply to a question:
+          "לא, יצא נוראי" / "ניסיתי ולא יצא" / "לא כדאי" →
+          signal_type: "negative"
+          output_note starts with: "לא מומלץ..."
+
+  RULE 4: POSITIVE reply to a question:
+          "כן! יצא מעולה" / "בטח, אותה כמות" →
+          signal_type: "confirmed"
+          output_note starts with: "אפשר..."
+
+  RULE 5: CREATOR reply (marked [CREATOR REPLY]):
+          Any creator reply confirming → signal_type: "creator_validated", confidence: 0.95
+          Any creator reply rejecting  → signal_type: "negative", confidence: 0.95
+
+  RULE 6: CONFLICTING replies (one good, one bad):
+          signal_type: "mixed"
+          output_note includes both: "אפשר... (עלול לצאת...)"
+          Also populate the 'warning' field with the negative note.
+
+=== FOR NON-QUESTION TOP COMMENTS ===
+
+  RULE 7: "החלפתי X ב-Y" / "השתמשתי ב-Y במקום X" → confirmed substitution
+  RULE 8: "הוספתי עוד X" / "הכפלתי את X" → confirmed quantity/addition
+  RULE 9: "אפיתי 35 דקות במקום 25" → confirmed technique
+  RULE 10: "ניסיתי עם X ולא יצא" → negative signal
+
+=== OUTPUT FORMAT ===
+
+Respond ONLY with valid JSON (no markdown, no preamble):
+
 {
   "modifications": [
     {
-      "span": "<exact text from comment>",
-      "aspect": "SUBSTITUTION|QUANTITY|TECHNIQUE|ADDITION",
-      "sentiment": "constructive|positive"
+      "span":          "<exact text from comment — Hebrew preserved>",
+      "aspect":        "SUBSTITUTION|QUANTITY|TECHNIQUE|ADDITION",
+      "sentiment":     "constructive|positive",
+      "target":        "<ingredient or step in the recipe being modified>",
+      "alternative":   "<the modification: new ingredient, amount, method>",
+      "signal_type":   "confirmed|creator_validated|negative|mixed|suggestion",
+      "confidence":    0.0-1.0,
+      "quantity_note": "<amount info if mentioned, else empty string>",
+      "warning":       "<negative note if mixed, else empty string>",
+      "output_note":   "<complete ready-to-display Hebrew sentence>"
     }
   ],
   "has_modification": true|false,
-  "overall_sentiment": "constructive|positive|neutral"
-}"""
+  "overall_sentiment": "constructive|positive|neutral",
+  "source": "<question_answered_positively|question_answered_negatively|confirmed_statement|etc>"
+}
+
+=== output_note FORMATTING RULES ===
+
+  Positive/confirmed: "אפשר להחליף [target] ב[alternative][quantity if any]"
+  Confirmed+warning:  "אפשר להחליף [target] ב[alternative] (⚠️ [warning])"
+  Negative:           "לא מומלץ [alternative] — [reason from comment]"
+  Creator validated:  "אפשר [alternative] (אושר על ידי יוצר הערוץ)"
+  Suggestion only:    "ניתן לנסות [alternative] (לא אושר)"
+"""
 
 
 FEW_SHOT_EXAMPLES = """
-EXAMPLE 1:
-Comment: "עשיתי את העוגה והיא יצאה מדהימה! רק הוספתי עוד כפית סוכר כי אני אוהבת מתוק"
+=== EXAMPLES ===
+
+EXAMPLE 1 — Question with positive answer:
+[TOP COMMENT] "אפשר במקום קמח רגיל להשתמש בקמח כוסמין?"
+[REPLY 1, user] "כן! ניסיתי ויצא מעולה, אותה כמות"
+[REPLY 2, user] "אני גם עושה את זה תמיד, יוצא יותר בריא"
 
 Output:
 {
-  "modifications": [
-    {
-      "span": "הוספתי עוד כפית סוכר",
-      "aspect": "QUANTITY",
-      "sentiment": "constructive"
-    }
-  ],
+  "modifications": [{
+    "span": "קמח כוסמין",
+    "aspect": "SUBSTITUTION",
+    "sentiment": "constructive",
+    "target": "קמח",
+    "alternative": "קמח כוסמין",
+    "signal_type": "confirmed",
+    "confidence": 0.90,
+    "quantity_note": "אותה כמות",
+    "warning": "",
+    "output_note": "אפשר להחליף קמח בקמח כוסמין באותה כמות"
+  }],
   "has_modification": true,
-  "overall_sentiment": "constructive"
+  "overall_sentiment": "constructive",
+  "source": "question_answered_positively"
 }
 
-EXAMPLE 2:
-Comment: "במקום חמאה השתמשתי בשמן קוקוס והוספתי גם קינמון - יצא מושלם!"
+EXAMPLE 2 — Question with NEGATIVE answer:
+[TOP COMMENT] "האם אפשר להשתמש בקמח ללא גלוטן?"
+[REPLY 1, user] "ניסיתי ולא יצא, הלחם לא תפח בכלל"
 
 Output:
 {
-  "modifications": [
-    {
-      "span": "במקום חמאה השתמשתי בשמן קוקוס",
-      "aspect": "SUBSTITUTION",
-      "sentiment": "constructive"
-    },
-    {
-      "span": "הוספתי גם קינמון",
-      "aspect": "ADDITION",
-      "sentiment": "constructive"
-    }
-  ],
+  "modifications": [{
+    "span": "קמח ללא גלוטן",
+    "aspect": "SUBSTITUTION",
+    "sentiment": "constructive",
+    "target": "קמח",
+    "alternative": "קמח ללא גלוטן",
+    "signal_type": "negative",
+    "confidence": 0.85,
+    "quantity_note": "",
+    "warning": "הלחם לא יתפח בכלל",
+    "output_note": "לא מומלץ קמח ללא גלוטן — הלחם לא יתפח"
+  }],
   "has_modification": true,
-  "overall_sentiment": "constructive"
+  "overall_sentiment": "constructive",
+  "source": "question_answered_negatively"
 }
 
-EXAMPLE 3:
-Comment: "אפיתי 35 דקות במקום 25 כי התנור שלי חלש יותר"
-
-Output:
-{
-  "modifications": [
-    {
-      "span": "אפיתי 35 דקות במקום 25",
-      "aspect": "TECHNIQUE",
-      "sentiment": "constructive"
-    }
-  ],
-  "has_modification": true,
-  "overall_sentiment": "constructive"
-}
-
-EXAMPLE 4:
-Comment: "וואו מתכון מדהים! תודה רבה!"
+EXAMPLE 3 — Question with NO meaningful answer:
+[TOP COMMENT] "אפשר לעשות עם חלב שקדים?"
+[REPLY 1, user] "גם אני רוצה לדעת!"
+[REPLY 2, user] "😋😋"
 
 Output:
 {
   "modifications": [],
   "has_modification": false,
-  "overall_sentiment": "positive"
+  "overall_sentiment": "neutral",
+  "source": "question_unanswered"
 }
 
-EXAMPLE 5:
-Comment: "עשיתי עם פחות מלח, החלפתי את הכוסברה בפטרוזיליה ואפיתי בתנור במקום על הכיריים"
+EXAMPLE 4 — Confirmed statement (not a question):
+[TOP COMMENT] "עשיתי עם חמאה תמרים במקום חמאה רגילה ויצא מדהים! יותר עשיר"
 
 Output:
 {
-  "modifications": [
-    {
-      "span": "עם פחות מלח",
-      "aspect": "QUANTITY",
-      "sentiment": "constructive"
-    },
-    {
-      "span": "החלפתי את הכוסברה בפטרוזיליה",
-      "aspect": "SUBSTITUTION",
-      "sentiment": "constructive"
-    },
-    {
-      "span": "אפיתי בתנור במקום על הכיריים",
-      "aspect": "TECHNIQUE",
-      "sentiment": "constructive"
-    }
-  ],
+  "modifications": [{
+    "span": "חמאה תמרים במקום חמאה רגילה",
+    "aspect": "SUBSTITUTION",
+    "sentiment": "constructive",
+    "target": "חמאה",
+    "alternative": "חמאה תמרים",
+    "signal_type": "confirmed",
+    "confidence": 0.85,
+    "quantity_note": "",
+    "warning": "",
+    "output_note": "אפשר להחליף חמאה בחמאה תמרים — יצא יותר עשיר"
+  }],
   "has_modification": true,
-  "overall_sentiment": "constructive"
+  "overall_sentiment": "constructive",
+  "source": "confirmed_statement"
+}
+
+EXAMPLE 5 — Creator reply:
+[TOP COMMENT] "אפשר לאפות ב-160 במקום 180?"
+[CREATOR REPLY] "כן, אבל תוסיפו 10 דקות לזמן האפייה"
+
+Output:
+{
+  "modifications": [{
+    "span": "לאפות ב-160 במקום 180",
+    "aspect": "TECHNIQUE",
+    "sentiment": "constructive",
+    "target": "טמפרטורת אפייה",
+    "alternative": "160 מעלות",
+    "signal_type": "creator_validated",
+    "confidence": 0.95,
+    "quantity_note": "הוסיפו 10 דקות לזמן האפייה",
+    "warning": "",
+    "output_note": "אפשר לאפות ב-160 מעלות (הוסיפו 10 דקות — אושר על ידי יוצר הערוץ)"
+  }],
+  "has_modification": true,
+  "overall_sentiment": "constructive",
+  "source": "question_answered_by_creator"
+}
+
+EXAMPLE 6 — Mixed replies:
+[TOP COMMENT] "אפשר להחליף בקמח כוסמין?"
+[REPLY 1, user] "כן יצא טוב"
+[REPLY 2, user] "ניסיתי, יצא קצת דחוס"
+
+Output:
+{
+  "modifications": [{
+    "span": "קמח כוסמין",
+    "aspect": "SUBSTITUTION",
+    "sentiment": "constructive",
+    "target": "קמח",
+    "alternative": "קמח כוסמין",
+    "signal_type": "mixed",
+    "confidence": 0.60,
+    "quantity_note": "",
+    "warning": "עלול לצאת קצת דחוס",
+    "output_note": "אפשר להחליף בקמח כוסמין (⚠️ עלול לצאת קצת דחוס)"
+  }],
+  "has_modification": true,
+  "overall_sentiment": "constructive",
+  "source": "question_mixed_answers"
 }
 """
 
 
 # =============================================================================
-# TEACHER MODEL: GEMINI
+# HELPER — FORMAT THREAD FOR PROMPT
+# =============================================================================
+
+def format_thread_for_prompt(thread: Dict) -> str:
+    """Convert a thread dict to the prompt input format."""
+    top  = thread.get('top_comment', {})
+    reps = thread.get('replies', [])
+
+    lines = [f'[TOP COMMENT] "{top.get("text", "")}"']
+    for i, r in enumerate(reps, 1):
+        prefix = "[CREATOR REPLY]" if r.get('is_creator') else f"[REPLY {i}, user]"
+        lines.append(f'{prefix} "{r.get("text", "")}"')
+
+    return "\n".join(lines)
+
+
+# =============================================================================
+# TEACHER MODELS
 # =============================================================================
 
 class GeminiTeacher:
-    """Teacher model using Google's Gemini 1.5 Pro."""
-
     def __init__(self, api_key: str, model_name: str = "gemini-1.5-pro"):
         if not GEMINI_AVAILABLE:
-            raise ImportError(
-                "google-generativeai not installed. Run: pip install google-generativeai"
-            )
+            raise ImportError("google-generativeai not installed.")
         genai.configure(api_key=api_key)
         self.model      = genai.GenerativeModel(model_name)
         self.model_name = model_name
-        self.generation_config = genai.types.GenerationConfig(
-            temperature=0.0,
-            max_output_tokens=1024,
-        )
+        self.gen_config = genai.types.GenerationConfig(temperature=0.0, max_output_tokens=1024)
 
-    def generate(self, comment_text: str) -> TeacherOutput:
-        """Call Gemini and parse its JSON response."""
+    def generate(self, thread_text: str) -> TeacherOutput:
         prompt = (
             f"{SYSTEM_PROMPT}\n\n"
             f"{FEW_SHOT_EXAMPLES}\n\n"
-            f"Now analyze this comment:\n"
-            f'Comment: "{comment_text}"\n\n'
+            f"=== NOW ANALYZE THIS THREAD ===\n\n"
+            f"{thread_text}\n\n"
             f"Output (JSON only, no markdown):"
         )
         try:
-            response = self.model.generate_content(
-                prompt,
-                generation_config=self.generation_config,
-            )
-            return self._parse_response(response.text, comment_text)
+            resp = self.model.generate_content(prompt, generation_config=self.gen_config)
+            return self._parse(resp.text, thread_text)
         except Exception as e:
             return TeacherOutput(error=str(e))
 
-    def _parse_response(self, response: str, original_text: str) -> TeacherOutput:
-        """Clean markdown fences, parse JSON, resolve character offsets."""
+    def _parse(self, response: str, thread_text: str) -> TeacherOutput:
         try:
             cleaned = response.strip()
             if cleaned.startswith("```"):
                 cleaned = re.sub(r'^```json?\n?', '', cleaned)
-                cleaned = re.sub(r'\n?```$',      '', cleaned)
-
-            data          = json.loads(cleaned)
-            modifications = []
-
-            for mod in data.get("modifications", []):
-                span = mod.get("span", "")
-                start_char = original_text.find(span) if span else -1
-                end_char   = (
-                    start_char + len(span)
-                    if start_char >= 0 else None
-                )
-
-                modifications.append(Modification(
-                    span=span,
-                    aspect=mod.get("aspect", "UNKNOWN"),
-                    sentiment=mod.get("sentiment", "constructive"),
-                    start_char=start_char if start_char >= 0 else None,
-                    end_char=end_char,
-                ))
-
+                cleaned = re.sub(r'\n?```$', '', cleaned)
+            data  = json.loads(cleaned)
+            mods  = self._parse_mods(data.get("modifications", []), thread_text)
             return TeacherOutput(
-                modifications=modifications,
-                has_modification=data.get(
-                    "has_modification", len(modifications) > 0
-                ),
+                modifications=mods,
+                has_modification=data.get("has_modification", len(mods) > 0),
                 overall_sentiment=data.get("overall_sentiment", "neutral"),
+                source=data.get("source", ""),
                 raw_response=response,
             )
-
         except json.JSONDecodeError as e:
-            return TeacherOutput(
-                error=f"JSON parse error: {e}",
-                raw_response=response,
-            )
+            return TeacherOutput(error=f"JSON parse error: {e}", raw_response=response)
 
+    def _parse_mods(self, raw: List[Dict], thread_text: str) -> List[Modification]:
+        mods = []
+        # Find all text in thread for span search
+        all_text = re.sub(r'\[.*?\]\s*"?', ' ', thread_text)  # strip [TAG] prefixes
+        for m in raw:
+            span = m.get("span", "")
+            sc   = all_text.find(span) if span else -1
+            mods.append(Modification(
+                span=span,
+                aspect=m.get("aspect", "UNKNOWN"),
+                sentiment=m.get("sentiment", "constructive"),
+                start_char=sc if sc >= 0 else None,
+                end_char=(sc + len(span)) if sc >= 0 else None,
+                target=m.get("target", ""),
+                alternative=m.get("alternative", ""),
+                signal_type=m.get("signal_type", "confirmed"),
+                confidence=float(m.get("confidence", 0.0)),
+                quantity_note=m.get("quantity_note", ""),
+                warning=m.get("warning", ""),
+                output_note=m.get("output_note", ""),
+            ))
+        return mods
 
-# =============================================================================
-# TEACHER MODEL: OPENAI
-# =============================================================================
 
 class OpenAITeacher:
-    """Teacher model using OpenAI's GPT-4o."""
-
     def __init__(self, api_key: str, model_name: str = "gpt-4o"):
         if not OPENAI_AVAILABLE:
-            raise ImportError("openai not installed. Run: pip install openai")
+            raise ImportError("openai not installed.")
         self.client     = OpenAI(api_key=api_key)
         self.model_name = model_name
 
-    def generate(self, comment_text: str) -> TeacherOutput:
-        """Call GPT-4o and parse its JSON response."""
+    def generate(self, thread_text: str) -> TeacherOutput:
         try:
-            response = self.client.chat.completions.create(
+            resp = self.client.chat.completions.create(
                 model=self.model_name,
                 messages=[
-                    {
-                        "role":    "system",
-                        "content": SYSTEM_PROMPT + "\n\n" + FEW_SHOT_EXAMPLES,
-                    },
-                    {
-                        "role":    "user",
-                        "content": (
-                            f'Analyze this comment:\n'
-                            f'Comment: "{comment_text}"\n\n'
-                            f"Output (JSON only):"
-                        ),
-                    },
+                    {"role": "system", "content": SYSTEM_PROMPT + "\n\n" + FEW_SHOT_EXAMPLES},
+                    {"role": "user",   "content": f"Analyze this thread:\n\n{thread_text}\n\nOutput (JSON only):"},
                 ],
-                temperature=0.0,
-                max_tokens=1024,
+                temperature=0.0, max_tokens=1024,
                 response_format={"type": "json_object"},
             )
-            raw_response = response.choices[0].message.content
-            return self._parse_response(raw_response, comment_text)
+            raw = resp.choices[0].message.content
+            return GeminiTeacher._parse(self, raw, thread_text)
         except Exception as e:
             return TeacherOutput(error=str(e))
 
-    def _parse_response(self, response: str, original_text: str) -> TeacherOutput:
-        """Parse JSON response from GPT-4o and resolve character offsets."""
-        try:
-            data          = json.loads(response)
-            modifications = []
-
-            for mod in data.get("modifications", []):
-                span       = mod.get("span", "")
-                start_char = original_text.find(span) if span else -1
-                end_char   = (
-                    start_char + len(span)
-                    if start_char >= 0 else None
-                )
-
-                modifications.append(Modification(
-                    span=span,
-                    aspect=mod.get("aspect", "UNKNOWN"),
-                    sentiment=mod.get("sentiment", "constructive"),
-                    start_char=start_char if start_char >= 0 else None,
-                    end_char=end_char,
-                ))
-
-            return TeacherOutput(
-                modifications=modifications,
-                has_modification=data.get(
-                    "has_modification", len(modifications) > 0
-                ),
-                overall_sentiment=data.get("overall_sentiment", "neutral"),
-                raw_response=response,
-            )
-
-        except json.JSONDecodeError as e:
-            return TeacherOutput(
-                error=f"JSON parse error: {e}",
-                raw_response=response,
-            )
-
 
 # =============================================================================
-# MAIN LABELING PIPELINE
+# MAIN PIPELINE
 # =============================================================================
 
 class SilverLabelGenerator:
     """
-    Main pipeline: reads comments.jsonl → calls Teacher API → writes teacher_output.jsonl.
+    Reads threads.jsonl → calls Teacher (Gemini/GPT-4o) → writes teacher_output.jsonl.
 
-    Features:
-      - Safe resume: skip comments already labeled in previous runs
-      - Exponential-backoff retry per comment
-      - Incremental file writes (flush after each comment)
-      - Full field passthrough so downstream steps see all original fields
-
-    Usage:
-        generator = SilverLabelGenerator(api_key="...", provider="gemini")
-        generator.process_file("data/raw_youtube/comments.jsonl")
+    Key behaviors:
+      - Labels at THREAD level (top_comment + replies together)
+      - Questions without meaningful answers → has_modification: false
+      - Creator replies flagged and weighted
+      - Safe resume: skips already-labeled thread_ids
+      - Incremental writes (flush after each thread)
     """
 
     def __init__(
         self,
-        api_key:              str,
-        provider:             str = "gemini",
-        model_name:           Optional[str] = None,
-        output_dir:           str = "data/silver_labels",
-        delay_between_calls:  float = 0.5,
-        max_retries:          int = 3,
+        api_key:             str,
+        provider:            str = "gemini",
+        model_name:          Optional[str] = None,
+        output_dir:          str = "data/silver_labels",
+        delay_between_calls: float = 0.5,
+        max_retries:         int = 3,
     ):
-        self.provider   = provider
-        self.output_dir = Path(output_dir)
+        self.output_dir  = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.delay       = delay_between_calls
         self.max_retries = max_retries
@@ -439,122 +473,108 @@ class SilverLabelGenerator:
         elif provider == "openai":
             self.teacher = OpenAITeacher(api_key, model_name or "gpt-4o")
         else:
-            raise ValueError(f"Unknown provider: '{provider}'. Use 'gemini' or 'openai'.")
+            raise ValueError(f"Unknown provider '{provider}'. Use 'gemini' or 'openai'.")
 
         self.model_name = self.teacher.model_name
-
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s | %(levelname)s | %(message)s',
-        )
+        logging.basicConfig(level=logging.INFO,
+            format='%(asctime)s | %(levelname)s | %(message)s')
         self.logger = logging.getLogger(__name__)
 
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
 
     def process_file(
         self,
-        input_file:     str,
-        output_file:    Optional[str] = None,
-        limit:          Optional[int] = None,
-        skip_existing:  bool = True,
+        input_file:    str,
+        output_file:   Optional[str] = None,
+        limit:         Optional[int] = None,
+        skip_existing: bool = True,
     ) -> Dict[str, Any]:
         """
-        Process a JSONL file of comments and write silver labels.
+        Process threads.jsonl and generate silver labels.
 
         Args:
-            input_file:    Path to comments.jsonl (output of collect.py)
-            output_file:   Path to output JSONL (default: silver_labels/teacher_output.jsonl)
-            limit:         Cap on number of comments to process (None = all)
-            skip_existing: Skip comments whose comment_id is already in the output file
-                           (enables safe resume of interrupted runs)
-
-        Returns:
-            Statistics dictionary
+            input_file:    Path to threads.jsonl (output of collect.py v3)
+            output_file:   Output path (default: silver_labels/teacher_output.jsonl)
+            limit:         Max threads to process (None = all)
+            skip_existing: Skip thread_ids already in output (safe resume)
         """
         input_path  = Path(input_file)
         if not input_path.exists():
-            raise FileNotFoundError(f"Input file not found: {input_file}")
+            raise FileNotFoundError(f"Input not found: {input_file}")
 
-        output_path = (
-            Path(output_file) if output_file
+        output_path = Path(output_file) if output_file \
             else self.output_dir / "teacher_output.jsonl"
-        )
 
-        # ── Resume: collect IDs already in output ─────────────────────────────
+        # Resume: load already-labeled IDs
         existing_ids: set = set()
         if skip_existing and output_path.exists():
             with open(output_path, 'r', encoding='utf-8') as f:
                 for line in f:
                     try:
-                        data = json.loads(line)
-                        existing_ids.add(data.get("comment_id"))
+                        existing_ids.add(json.loads(line).get("thread_id"))
                     except Exception:
                         pass
-            self.logger.info(
-                f"Resume mode: {len(existing_ids)} comments already labeled, skipping them."
-            )
+            self.logger.info(f"Resume mode: {len(existing_ids)} threads already labeled, skipping.")
 
-        # ── Load comments (excluding already-labeled ones) ────────────────────
-        comments: List[Dict] = []
+        # Load threads
+        threads: List[Dict] = []
         with open(input_path, 'r', encoding='utf-8') as f:
             for line in f:
                 try:
-                    comment = json.loads(line)
-                    if comment.get("comment_id") not in existing_ids:
-                        comments.append(comment)
+                    t = json.loads(line)
+                    if t.get("thread_id") not in existing_ids:
+                        threads.append(t)
                 except json.JSONDecodeError:
                     continue
 
         if limit:
-            comments = comments[:limit]
+            threads = threads[:limit]
 
         self.logger.info(
-            f"Processing {len(comments)} comments with {self.model_name} "
-            f"({len(existing_ids)} skipped as already labeled)"
+            f"Processing {len(threads)} threads with {self.model_name} "
+            f"({len(existing_ids)} skipped)"
         )
 
-        # ── Processing loop ───────────────────────────────────────────────────
-        stats: Dict[str, Any] = {
-            "total_processed": 0,
-            "successful":      0,
-            "errors":          0,
-            "with_modifications": 0,
-            "total_modifications": 0,
-            "aspect_counts": {
-                "SUBSTITUTION": 0,
-                "QUANTITY":     0,
-                "TECHNIQUE":    0,
-                "ADDITION":     0,
-            },
+        stats = {
+            "total_processed": 0, "successful": 0, "errors": 0,
+            "with_modifications": 0, "total_modifications": 0,
+            "discarded_unanswered_questions": 0,
+            "aspect_counts": {"SUBSTITUTION": 0, "QUANTITY": 0, "TECHNIQUE": 0, "ADDITION": 0},
+            "signal_type_counts": {"confirmed": 0, "creator_validated": 0, "negative": 0,
+                                   "mixed": 0, "suggestion": 0},
             "started_at": datetime.now().isoformat(),
         }
 
         with open(output_path, 'a', encoding='utf-8') as f:
-            for comment in tqdm(comments, desc="Generating silver labels"):
-                result = self._process_comment(comment)
+            for thread in tqdm(threads, desc="Labeling threads"):
+                thread_text = format_thread_for_prompt(thread)
+                result      = self._process_with_retry(thread_text)
 
-                # ── Build output record ────────────────────────────────────────
-                # BUG FIX: channel_id was missing — it is now passed through so
-                #          downstream steps can group/filter by channel.
+                # BUG FIX (v3): channel_id now included in output
                 output_data = {
-                    "comment_id":    comment.get("comment_id"),
-                    "video_id":      comment.get("video_id"),
-                    "channel_id":    comment.get("channel_id", ""),   # ← BUG FIX
-                    "text":          comment.get("text"),
-                    "like_count":    comment.get("like_count", 0),
-                    "video_title":   comment.get("video_title", ""),
-                    "channel_title": comment.get("channel_title", ""),
-                    "teacher_output": self._serialize_teacher_output(result),
-                    "teacher_model": self.model_name,
-                    "labeled_at":    datetime.now().isoformat(),
+                    "thread_id":     thread.get("thread_id"),
+                    "video_id":      thread.get("video_id"),
+                    "channel_id":    thread.get("channel_id", ""),   # ← BUG FIX
+                    "video_title":   thread.get("video_title", ""),
+                    "channel_title": thread.get("channel_title", ""),
+                    "source":        thread.get("source", "youtube"),
+                    # Keep original text fields for BIO alignment
+                    "top_comment_text": thread.get("top_comment", {}).get("text", ""),
+                    "replies_texts":    [r.get("text","") for r in thread.get("replies", [])],
+                    "has_creator_reply": thread.get("has_creator_reply", False),
+                    "total_likes":      thread.get("total_likes", 0),
+                    "appearance_count": thread.get("appearance_count", 1),
+                    # Teacher output
+                    "teacher_output":   self._serialize(result),
+                    "teacher_model":    self.model_name,
+                    "labeled_at":       datetime.now().isoformat(),
                 }
 
                 f.write(json.dumps(output_data, ensure_ascii=False) + "\n")
-                f.flush()   # Incremental writes — safe against crashes
+                f.flush()
 
-                # ── Update stats ───────────────────────────────────────────────
+                # Stats
                 stats["total_processed"] += 1
-
                 if result.error:
                     stats["errors"] += 1
                 else:
@@ -565,12 +585,15 @@ class SilverLabelGenerator:
                         for mod in result.modifications:
                             if mod.aspect in stats["aspect_counts"]:
                                 stats["aspect_counts"][mod.aspect] += 1
+                            if mod.signal_type in stats["signal_type_counts"]:
+                                stats["signal_type_counts"][mod.signal_type] += 1
+                    elif result.source == "question_unanswered":
+                        stats["discarded_unanswered_questions"] += 1
 
                 time.sleep(self.delay)
 
         stats["ended_at"] = datetime.now().isoformat()
 
-        # ── Persist stats ─────────────────────────────────────────────────────
         stats_path = self.output_dir / "generation_stats.json"
         with open(stats_path, 'w', encoding='utf-8') as f:
             json.dump(stats, f, indent=2, ensure_ascii=False)
@@ -578,68 +601,60 @@ class SilverLabelGenerator:
         self._print_summary(stats)
         return stats
 
-    # -------------------------------------------------------------------------
-
-    def _process_comment(self, comment: Dict) -> TeacherOutput:
-        """
-        Call the Teacher model on one comment with exponential-backoff retry.
-        Returns the best TeacherOutput (or one with error set if all retries fail).
-        """
-        text = comment.get("text", "")
-
-        last_result = TeacherOutput(error="No attempts made")
+    def _process_with_retry(self, thread_text: str) -> TeacherOutput:
+        last = TeacherOutput(error="No attempts")
         for attempt in range(self.max_retries):
-            result = self.teacher.generate(text)
+            result = self.teacher.generate(thread_text)
             if not result.error:
                 return result
-            last_result = result
+            last = result
             if attempt < self.max_retries - 1:
-                time.sleep(2 ** attempt)   # Exponential backoff: 1s, 2s, 4s
+                time.sleep(2 ** attempt)
+        return last
 
-        return last_result
-
-    def _serialize_teacher_output(self, output: TeacherOutput) -> Dict:
-        """Convert TeacherOutput to a plain dict for JSON serialization."""
+    def _serialize(self, output: TeacherOutput) -> Dict:
         return {
             "modifications": [
                 {
-                    "span":       m.span,
-                    "aspect":     m.aspect,
-                    "sentiment":  m.sentiment,
-                    "start_char": m.start_char,
-                    "end_char":   m.end_char,
+                    "span":          m.span,
+                    "aspect":        m.aspect,
+                    "sentiment":     m.sentiment,
+                    "start_char":    m.start_char,
+                    "end_char":      m.end_char,
+                    "target":        m.target,
+                    "alternative":   m.alternative,
+                    "signal_type":   m.signal_type,
+                    "confidence":    m.confidence,
+                    "quantity_note": m.quantity_note,
+                    "warning":       m.warning,
+                    "output_note":   m.output_note,
                 }
                 for m in output.modifications
             ],
             "has_modification":   output.has_modification,
             "overall_sentiment":  output.overall_sentiment,
+            "source":             output.source,
             "error":              output.error,
         }
 
     def _print_summary(self, stats: Dict) -> None:
-        """Print a human-readable generation summary."""
-        print("\n" + "=" * 60)
-        print("SILVER LABEL GENERATION SUMMARY")
-        print("=" * 60)
-        print(f"  Total processed    : {stats['total_processed']}")
-        print(f"  Successful         : {stats['successful']}")
-        print(f"  Errors             : {stats['errors']}")
-        print(f"  With modifications : {stats['with_modifications']}")
-        print(f"  Total modifications: {stats['total_modifications']}")
+        print(f"\n{'='*60}\nSILVER LABEL GENERATION SUMMARY\n{'='*60}")
+        print(f"  Total processed     : {stats['total_processed']:,}")
+        print(f"  Successful          : {stats['successful']:,}")
+        print(f"  Errors              : {stats['errors']:,}")
+        print(f"  With modifications  : {stats['with_modifications']:,}")
+        print(f"  Unanswered questions: {stats['discarded_unanswered_questions']:,}")
+        print(f"  Total modifications : {stats['total_modifications']:,}")
         print("\n  Aspect breakdown:")
-        for aspect, count in stats['aspect_counts'].items():
-            pct = (
-                100 * count / stats['total_modifications']
-                if stats['total_modifications'] > 0 else 0
-            )
-            print(f"    {aspect:<14}: {count:>5}  ({pct:.1f}%)")
-
-        if stats['total_processed'] > 0:
-            mod_rate = 100 * stats['with_modifications'] / stats['total_processed']
-            err_rate = 100 * stats['errors']            / stats['total_processed']
-            print(f"\n  Modification rate  : {mod_rate:.1f}%")
-            print(f"  Error rate         : {err_rate:.1f}%")
-
+        for asp, cnt in stats['aspect_counts'].items():
+            pct = 100 * cnt / stats['total_modifications'] if stats['total_modifications'] else 0
+            print(f"    {asp:<16}: {cnt:>5}  ({pct:.1f}%)")
+        print("\n  Signal type breakdown:")
+        for st, cnt in stats['signal_type_counts'].items():
+            print(f"    {st:<20}: {cnt:>5}")
+        if stats['total_processed']:
+            rate = 100 * stats['with_modifications'] / stats['total_processed']
+            print(f"\n  Modification rate : {rate:.1f}%")
         print("=" * 60)
 
 
@@ -656,71 +671,44 @@ def main() -> int:
         pass
 
     parser = argparse.ArgumentParser(
-        description="Generate silver labels using Teacher model (Gemini or GPT-4o)",
+        description="Generate silver labels (thread-level) using Gemini or GPT-4o",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python -m src.teacher_labeling.generate_labels \\
-      --input data/raw_youtube/comments.jsonl --provider gemini
-
-  # Resume interrupted run (default: skips already-labeled comments)
-  python -m src.teacher_labeling.generate_labels \\
-      --input data/raw_youtube/comments.jsonl --provider gemini
-
-  # Test with first 50 comments
-  python -m src.teacher_labeling.generate_labels \\
-      --input data/raw_youtube/comments.jsonl --limit 50
-        """,
+  python -m src.teacher_labeling.generate_labels --input data/raw_youtube/threads.jsonl
+  python -m src.teacher_labeling.generate_labels --input threads.jsonl --limit 50
+  python -m src.teacher_labeling.generate_labels --input threads.jsonl --no-skip  # reprocess all
+        """
     )
-    parser.add_argument("--input",    "-i", required=True,
-                        help="Input comments.jsonl (from collect.py)")
-    parser.add_argument("--output",   "-o",
-                        help="Output path (default: data/silver_labels/teacher_output.jsonl)")
-    parser.add_argument("--provider", choices=["gemini", "openai"], default="gemini",
-                        help="Teacher model provider")
-    parser.add_argument("--api-key",  help="API key (or set env var GOOGLE_API_KEY / OPENAI_API_KEY)")
-    parser.add_argument("--model",    help="Model name override (default: gemini-1.5-pro / gpt-4o)")
-    parser.add_argument("--limit",    type=int,
-                        help="Max number of comments to process (default: all)")
-    parser.add_argument("--delay",    type=float, default=0.5,
-                        help="Seconds between API calls (default: 0.5)")
-    parser.add_argument("--retries",  type=int, default=3,
-                        help="Max retries per comment (default: 3)")
-    parser.add_argument("--no-skip",  action="store_true",
-                        help="Reprocess all comments (don't skip existing labels)")
-    parser.add_argument("--output-dir", default="data/silver_labels",
-                        help="Output directory (default: data/silver_labels)")
-
+    parser.add_argument("--input",      "-i", required=True,  help="Input threads.jsonl")
+    parser.add_argument("--output",     "-o",                 help="Output file")
+    parser.add_argument("--provider",   choices=["gemini","openai"], default="gemini")
+    parser.add_argument("--api-key",                          help="API key")
+    parser.add_argument("--model",                            help="Model name override")
+    parser.add_argument("--limit",      type=int,             help="Max threads to process")
+    parser.add_argument("--delay",      type=float, default=0.5)
+    parser.add_argument("--retries",    type=int,   default=3)
+    parser.add_argument("--no-skip",    action="store_true",  help="Reprocess all")
+    parser.add_argument("--output-dir", default="data/silver_labels")
     args = parser.parse_args()
 
-    # Resolve API key
     api_key = args.api_key
     if not api_key:
-        env_key = "GOOGLE_API_KEY" if args.provider == "gemini" else "OPENAI_API_KEY"
-        api_key = os.environ.get(env_key)
-
+        env = "GOOGLE_API_KEY" if args.provider == "gemini" else "OPENAI_API_KEY"
+        api_key = os.environ.get(env)
     if not api_key:
-        env_var = "GOOGLE_API_KEY" if args.provider == "gemini" else "OPENAI_API_KEY"
-        print(f"❌ No API key provided!")
-        print(f"   Set {env_var} environment variable, or use --api-key")
+        env = "GOOGLE_API_KEY" if args.provider == "gemini" else "OPENAI_API_KEY"
+        print(f"❌ No API key. Set {env} or use --api-key")
         return 1
 
-    generator = SilverLabelGenerator(
-        api_key=api_key,
-        provider=args.provider,
-        model_name=args.model,
-        output_dir=args.output_dir,
-        delay_between_calls=args.delay,
-        max_retries=args.retries,
+    gen = SilverLabelGenerator(
+        api_key=api_key, provider=args.provider, model_name=args.model,
+        output_dir=args.output_dir, delay_between_calls=args.delay, max_retries=args.retries,
     )
-
-    generator.process_file(
-        input_file=args.input,
-        output_file=args.output,
-        limit=args.limit,
-        skip_existing=not args.no_skip,
+    gen.process_file(
+        input_file=args.input, output_file=args.output,
+        limit=args.limit, skip_existing=not args.no_skip,
     )
-
     return 0
 
 

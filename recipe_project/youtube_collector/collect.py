@@ -1,39 +1,37 @@
 """
-YouTube Comment Collector - Main Script
-========================================
+YouTube Comment Collector v3 — Thread-Aware
+=============================================
 Group 11: Daniel Simanovsky & Roei Ben Artzi
 NLP 2025a - Recipe Modification Extraction
 
-This script collects Hebrew comments from YouTube cooking channels.
-Configuration is read from config.yaml and channels.yaml.
+MAJOR CHANGE IN v3:
+  Comments are now collected as THREADS (top comment + all replies together),
+  not as flat individual records. This preserves the question→answer relationship
+  which is critical for correct teacher labeling.
+
+  A thread = one training example.
+  Target: 30,000 threads ≈ 85,000 individual comments.
+
+KEY DESIGN RULE:
+  A question comment ("אפשר במקום X?") is NEVER the signal.
+  The REPLY to that question is the signal.
+  The question is context. Store threads together, label replies.
+
+BUG FIXES IN v3:
+  - channel_id now stored in every thread (was missing in v1/v2)
+  - Creator comments flagged (is_creator=True) instead of silently dropped
+  - Thread structure replaces flat comment list
+  - source field added for future multi-source support
+  - appearance_count for deduplication
 
 Usage:
-    # Test API connection
     python collect.py --test
-
-    # Discover new channels
-    python collect.py --discover "מתכונים בישול"
-
-    # Collect from all active channels
-    python collect.py --collect
-
-    # Collect from specific channel
-    python collect.py --channel UC_CHANNEL_ID
-
-    # Collect from specific video
-    python collect.py --video VIDEO_ID
-
-    # Auto-discover ALL queries from channels.yaml → write results back to channels.yaml
     python collect.py --discover-all
-    # Then open channels.yaml, delete channels you don't want, set the rest active: true
-    # Then run --collect
-
-    # [NO API KEY NEEDED] Generate channel verification report from existing JSONL
-    python collect.py --list-channels
-    python collect.py --list-channels --input path/to/comments.jsonl
-
-    # [NO API KEY NEEDED] Filter out non-cooking channels after manual review
-    python collect.py --filter-channels --input comments.jsonl --csv channels_report.csv
+    python collect.py --collect
+    python collect.py --channel UC_CHANNEL_ID
+    python collect.py --video VIDEO_ID
+    python collect.py --list-channels   # no API key needed
+    python collect.py --filter-channels --input threads.jsonl --csv channels_report.csv
 """
 
 import os
@@ -47,7 +45,7 @@ import argparse
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass, asdict, field
-from typing import List, Dict, Optional, Generator, Any, Tuple
+from typing import List, Dict, Optional, Generator, Tuple, Any
 from collections import defaultdict
 
 import yaml
@@ -60,134 +58,179 @@ from googleapiclient.errors import HttpError
 # =============================================================================
 
 @dataclass
-class Comment:
+class ReplyRecord:
+    """A single reply within a thread."""
+    comment_id: str
+    text: str
+    like_count: int = 0
+    is_creator: bool = False       # True if this reply is from the video creator
+
+
+@dataclass
+class TopComment:
+    """The top-level comment that starts a thread."""
+    comment_id: str
+    text: str
+    like_count: int = 0
+
+
+@dataclass
+class Thread:
     """
-    Represents a YouTube comment with all fields needed for NLP pipeline.
+    A full comment thread: one top-level comment + all its replies.
 
-    FIELDS NEEDED FOR:
-      - NLP extraction  : text
-      - Ranking module  : like_count
-      - Context         : video_title, channel_title
-      - Data management : comment_id, video_id
-      - Channel audit   : channel_id  ← REQUIRED for YouTube channel URL
-      - Filtering/debug : word_count, has_modification_keyword, detected_keywords
+    This is the primary unit of collection and the primary training example.
+
+    Design rationale:
+      - A question comment is meaningless without its replies
+      - A creator answer is the strongest modification signal
+      - Storing threads preserves this context for teacher labeling
+
+    JSONL format (one line per thread):
+    {
+      "thread_id":        "UgwXXX",
+      "video_id":         "abc123",
+      "video_title":      "לחם כוסמין",
+      "channel_title":    "חן במטבח",
+      "channel_id":       "UCc0z...",         ← was missing in v1/v2
+      "source":           "youtube",
+      "appearance_count": 1,
+      "top_comment":      {"comment_id": ..., "text": ..., "like_count": ...},
+      "replies":          [{"comment_id": ..., "text": ..., "like_count": ...,
+                            "is_creator": true/false}, ...],
+      "has_creator_reply": false,
+      "total_likes":      4
+    }
     """
-    # === ESSENTIAL FOR NLP ===
-    text: str                   # The comment content - main input for extraction
-    like_count: int             # Social signal for ranking module
-    video_title: str            # Context: which recipe
-    channel_title: str          # Context: which cooking channel
+    # === IDENTIFIERS ===
+    thread_id:   str              # = top comment's comment_id
+    video_id:    str
+    channel_id:  str              # BUG FIX: was missing in v1/v2
+    
+    # === CONTEXT ===
+    video_title:   str
+    channel_title: str
+    source:        str = "youtube"
 
-    # === FOR DATA MANAGEMENT ===
-    comment_id: str             # For deduplication
-    video_id: str               # To group by recipe; also forms video URL
-    channel_id: str = ""        # REQUIRED: forms channel URL for audit/filtering
-                                #           youtube.com/channel/{channel_id}
-
-    # === PRE-COMPUTED FOR FILTERING ===
-    word_count: int = 0
-    has_modification_keyword: bool = False
-    detected_keywords: List[str] = field(default_factory=list)
+    # === CONTENT ===
+    top_comment:      TopComment = None
+    replies:          List[ReplyRecord] = field(default_factory=list)
+    
+    # === COMPUTED ===
+    has_creator_reply: bool = False
+    total_likes:       int  = 0
+    appearance_count:  int  = 1   # for deduplication — how many times exact text seen
 
 
 @dataclass
 class CollectionStats:
-    """Statistics for the collection run."""
-    start_time: str = ""
-    end_time: str = ""
-    channels_processed: int = 0
-    videos_processed: int = 0
-    comments_found: int = 0
-    comments_kept: int = 0
-    comments_filtered: int = 0
-    api_calls: int = 0
-    errors: int = 0
-    filter_reasons: Dict[str, int] = field(default_factory=dict)
+    start_time:          str = ""
+    end_time:            str = ""
+    channels_processed:  int = 0
+    videos_processed:    int = 0
+    threads_found:       int = 0
+    threads_kept:        int = 0
+    threads_filtered:    int = 0
+    api_calls:           int = 0
+    errors:              int = 0
+    filter_reasons:      Dict[str, int] = field(default_factory=dict)
 
 
 # =============================================================================
-# CONFIGURATION LOADER
+# CONFIGURATION
 # =============================================================================
 
 class Config:
-    """Loads and provides access to configuration from YAML files."""
-
     def __init__(self, config_path: str = "config.yaml", channels_path: str = "channels.yaml"):
-        # Load main config
-        config_file = Path(config_path)
-        if config_file.exists():
-            with open(config_file, 'r', encoding='utf-8') as f:
-                self._config = yaml.safe_load(f) or {}
-        else:
-            print(f"⚠️  Config file not found: {config_path}. Using defaults.")
-            self._config = {}
+        cfg_file = Path(config_path)
+        self._config = yaml.safe_load(cfg_file.read_text(encoding='utf-8')) or {} \
+            if cfg_file.exists() else self._defaults()
 
-        # Load channels config
-        channels_file = Path(channels_path)
-        if channels_file.exists():
-            with open(channels_file, 'r', encoding='utf-8') as f:
-                self._channels = yaml.safe_load(f) or {}
-        else:
-            print(f"⚠️  Channels file not found: {channels_path}. No channels configured.")
-            self._channels = {}
+        ch_file = Path(channels_path)
+        self._channels = yaml.safe_load(ch_file.read_text(encoding='utf-8')) or {} \
+            if ch_file.exists() else {}
+
+    def _defaults(self) -> dict:
+        return {
+            'output':     {'directory': './data/raw_youtube', 'threads_file': 'threads.jsonl',
+                           'stats_file': 'collection_stats.json', 'log_file': None},
+            'collection': {'target_threads': 30000, 'max_videos_per_channel': 100,
+                           'max_threads_per_video': 200, 'include_replies': True},
+            'filtering':  {'min_words': 5, 'require_hebrew': True,
+                           'skip_creator_top_comments': True, 'spam_keywords': ['http','https','www.']},
+            'api':        {'delay_between_videos': 0.5, 'delay_between_channels': 2.0,
+                           'max_retries': 3, 'retry_delay': 1.0, 'region_code': 'IL'},
+        }
 
     def get(self, *keys, default=None):
-        """Get a nested config value by key path."""
-        value = self._config
-        for key in keys:
-            if isinstance(value, dict):
-                value = value.get(key, default)
-            else:
-                return default
-        return value if value is not None else default
+        val = self._config
+        for k in keys:
+            val = val.get(k, default) if isinstance(val, dict) else default
+        return val if val is not None else default
 
     def get_active_channels(self) -> List[Dict]:
-        """Return channels marked active: true in channels.yaml."""
-        channels = self._channels.get('channels', [])
-        return [ch for ch in channels if ch.get('active', False)]
+        return [c for c in self._channels.get('channels', []) if c.get('active', False)]
 
-    def get_all_modification_keywords(self) -> List[str]:
-        """Return flat list of all modification detection keywords."""
-        keywords = []
-        mod_config = self._config.get('modification_keywords', {})
-        for category, words in mod_config.items():
+    def get_discovery_queries(self) -> List[str]:
+        return self._channels.get('discovery_queries', [
+            "מתכונים בישול", "אפייה ביתית", "בישול ישראלי",
+            "עוגות ומאפים", "מתכונים קלים", "שף ישראלי",
+            "בישול בריא", "קינוחים", "ארוחות משפחתיות", "מתכונים לשבת",
+        ])
+
+    def get_modification_keywords(self) -> List[str]:
+        kws = []
+        for cat, words in self._config.get('modification_keywords', {}).items():
             if isinstance(words, list):
-                keywords.extend(words)
-        return keywords
+                kws.extend(words)
+        return kws
 
 
 # =============================================================================
-# HEBREW TEXT UTILITIES
+# HEBREW UTILITIES
 # =============================================================================
 
 class HebrewUtils:
-    """Utilities for Hebrew text detection and analysis."""
-
-    HEBREW_PATTERN = re.compile(r'[\u0590-\u05FF]')
+    HEBREW = re.compile(r'[\u0590-\u05FF]')
 
     @classmethod
     def contains_hebrew(cls, text: str) -> bool:
-        """Check if text contains at least one Hebrew character."""
-        return bool(cls.HEBREW_PATTERN.search(text))
+        return bool(cls.HEBREW.search(text))
 
     @classmethod
     def word_count(cls, text: str) -> int:
-        """Count whitespace-separated words."""
         return len(text.strip().split())
 
     @classmethod
-    def is_spam(cls, text: str, spam_keywords: List[str]) -> bool:
-        """Return True if text contains any spam indicator."""
-        text_lower = text.lower()
-        for keyword in spam_keywords:
-            if keyword.lower() in text_lower:
-                return True
-        return False
+    def is_spam(cls, text: str, keywords: List[str]) -> bool:
+        t = text.lower()
+        return any(k.lower() in t for k in keywords)
 
     @classmethod
     def find_keywords(cls, text: str, keywords: List[str]) -> List[str]:
-        """Return list of modification keywords found in text."""
-        return [kw for kw in keywords if kw in text]
+        return [k for k in keywords if k in text]
+
+    @classmethod
+    def is_question(cls, text: str) -> bool:
+        """Detect if text is a question (not a modification statement)."""
+        stripped = text.strip()
+        if stripped.endswith('?'):
+            return True
+        question_words = ['האם', 'אפשר', 'כדאי', 'אפשרי', 'מה אם', 'מה לגבי']
+        return any(stripped.startswith(qw) or f' {qw} ' in stripped for qw in question_words)
+
+    @classmethod
+    def is_unhelpful_reply(cls, text: str) -> bool:
+        """Detect replies that don't answer the question (e.g., 'me too', emojis only)."""
+        stripped = text.strip()
+        if not stripped:
+            return True
+        # Only emojis / very short
+        no_hebrew = cls.HEBREW.sub('', stripped)
+        if len(stripped) < 4 and not cls.contains_hebrew(stripped):
+            return True
+        unhelpful = ['גם אני', 'גם אני רוצה', 'תשאל', 'לא יודע', 'מעניין', 'וואו']
+        return any(u in stripped for u in unhelpful)
 
 
 # =============================================================================
@@ -195,124 +238,79 @@ class HebrewUtils:
 # =============================================================================
 
 class YouTubeClient:
-    """Wrapper for YouTube Data API v3 with retry logic and stats tracking."""
-
     def __init__(self, api_key: str, config: Config):
-        self.api_key = api_key
-        self.config = config
+        self.config  = config
         self.youtube = build('youtube', 'v3', developerKey=api_key)
-        self.stats = CollectionStats(start_time=datetime.now().isoformat())
-        self.seen_ids: set = set()
+        self.stats   = CollectionStats(start_time=datetime.now().isoformat())
+        self.seen_thread_ids: set = set()
         self._setup_logging()
 
     def _setup_logging(self):
-        """Configure logging to console and optionally a file."""
-        log_file = self.config.get('output', 'log_file')
         handlers = [logging.StreamHandler()]
+        log_file = self.config.get('output', 'log_file')
         if log_file:
             Path(log_file).parent.mkdir(parents=True, exist_ok=True)
             handlers.append(logging.FileHandler(log_file, encoding='utf-8'))
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s | %(levelname)s | %(message)s',
-            handlers=handlers,
-        )
+        logging.basicConfig(level=logging.INFO,
+            format='%(asctime)s | %(levelname)s | %(message)s', handlers=handlers)
         self.logger = logging.getLogger(__name__)
 
-    def _api_call(self, request, description: str = "") -> Dict:
-        """
-        Execute an API request with exponential-backoff retry.
-        Raises immediately on quota-exceeded (403/429) so the caller can stop.
-        """
-        max_retries = self.config.get('api', 'max_retries', default=3)
-        base_delay  = self.config.get('api', 'retry_delay', default=1.0)
-
-        for attempt in range(max_retries):
+    def _api_call(self, request, desc: str = "") -> Dict:
+        retries   = self.config.get('api', 'max_retries', default=3)
+        base_delay = self.config.get('api', 'retry_delay', default=1.0)
+        for attempt in range(retries):
             try:
                 self.stats.api_calls += 1
                 return request.execute()
-
             except HttpError as e:
-                # Quota / auth errors are fatal – stop immediately
-                if e.resp.status in (403, 429):
-                    if any(x in str(e) for x in ('quotaExceeded', 'rateLimitExceeded', 'forbidden')):
-                        self.logger.error(
-                            "❌ API quota exceeded or forbidden! "
-                            "Stop for today and resume tomorrow."
-                        )
-                        raise
-
-                if attempt == max_retries - 1:
+                if e.resp.status in (403, 429) and any(
+                        x in str(e) for x in ('quotaExceeded', 'rateLimitExceeded', 'forbidden')):
+                    self.logger.error("❌ API quota exceeded. Stop for today.")
+                    raise
+                if attempt == retries - 1:
                     self.stats.errors += 1
                     raise
-
                 delay = base_delay * (2 ** attempt)
-                self.logger.warning(
-                    f"API error ({description}): {e}. "
-                    f"Retry {attempt + 1}/{max_retries} in {delay:.1f}s"
-                )
+                self.logger.warning(f"API error ({desc}): {e}. Retry in {delay:.1f}s")
                 time.sleep(delay)
 
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
     # CHANNEL / VIDEO DISCOVERY
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
 
     def search_channels(self, query: str, max_results: int = 10) -> List[Dict]:
-        """Search for channels matching a query string."""
-        self.logger.info(f"🔍 Searching channels: '{query}'")
-
         region = self.config.get('api', 'region_code', default='IL')
-        request = self.youtube.search().list(
-            part='snippet',
-            q=query,
-            type='channel',
-            maxResults=max_results,
-            regionCode=region,
-        )
-        response = self._api_call(request, "channel search")
-
+        resp = self._api_call(
+            self.youtube.search().list(part='snippet', q=query, type='channel',
+                maxResults=max_results, regionCode=region),
+            "channel search")
         channels = []
-        for item in response.get('items', []):
-            channel_id = item['snippet']['channelId']
-
-            # Fetch subscriber + video counts
-            info_request = self.youtube.channels().list(
-                part='snippet,statistics',
-                id=channel_id,
-            )
-            info_response = self._api_call(info_request, "channel info")
-
-            if info_response.get('items'):
-                info = info_response['items'][0]
+        for item in resp.get('items', []):
+            cid = item['snippet']['channelId']
+            info = self._api_call(
+                self.youtube.channels().list(part='snippet,statistics', id=cid),
+                "channel info")
+            if info.get('items'):
+                d = info['items'][0]
                 channels.append({
-                    'id':          channel_id,
-                    'name':        info['snippet']['title'],
-                    'description': info['snippet'].get('description', '')[:200],
-                    'subscribers': int(info['statistics'].get('subscriberCount', 0)),
-                    'videos':      int(info['statistics'].get('videoCount', 0)),
+                    'id':          cid,
+                    'name':        d['snippet']['title'],
+                    'description': d['snippet'].get('description', '')[:200],
+                    'subscribers': int(d['statistics'].get('subscriberCount', 0)),
+                    'videos':      int(d['statistics'].get('videoCount', 0)),
                 })
-
         return channels
 
-    def get_channel_videos(
-        self, channel_id: str, max_videos: int = 50
-    ) -> Generator[Dict, None, None]:
-        """Yield video dicts from a channel, newest first."""
-        next_page = None
-        retrieved = 0
-
+    def get_channel_videos(self, channel_id: str, max_videos: int = 100) -> Generator[Dict, None, None]:
+        next_page, retrieved = None, 0
         while retrieved < max_videos:
-            request = self.youtube.search().list(
-                part='snippet',
-                channelId=channel_id,
-                type='video',
-                order='date',
-                maxResults=min(50, max_videos - retrieved),
-                pageToken=next_page,
-            )
-            response = self._api_call(request, f"videos for {channel_id}")
-
-            for item in response.get('items', []):
+            resp = self._api_call(
+                self.youtube.search().list(
+                    part='snippet', channelId=channel_id, type='video',
+                    order='date', maxResults=min(50, max_videos - retrieved),
+                    pageToken=next_page),
+                f"videos for {channel_id}")
+            for item in resp.get('items', []):
                 yield {
                     'id':            item['id']['videoId'],
                     'title':         item['snippet']['title'],
@@ -323,49 +321,49 @@ class YouTubeClient:
                 retrieved += 1
                 if retrieved >= max_videos:
                     break
-
-            next_page = response.get('nextPageToken')
+            next_page = resp.get('nextPageToken')
             if not next_page:
                 break
 
-    # -------------------------------------------------------------------------
-    # COMMENT COLLECTION
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
+    # THREAD COLLECTION  (core new logic)
+    # ─────────────────────────────────────────────────────────────────────────
 
-    def get_video_comments(
-        self, video: Dict, max_comments: int = 100
-    ) -> Generator[Comment, None, None]:
-        """Yield Comment objects from a video (top-level + replies)."""
+    def get_video_threads(
+        self, video: Dict, max_threads: int = 200
+    ) -> Generator[Thread, None, None]:
+        """
+        Yield Thread objects from a video.
+
+        Each thread contains the top-level comment + ALL its replies.
+        Replies include a flag for whether the commenter is the video creator.
+
+        This replaces the old get_video_comments() which lost reply context.
+        """
         include_replies = self.config.get('collection', 'include_replies', default=True)
+        skip_creator_top = self.config.get('filtering', 'skip_creator_top_comments', default=True)
         next_page = None
         retrieved = 0
 
-        while retrieved < max_comments:
+        while retrieved < max_threads:
             try:
                 request = self.youtube.commentThreads().list(
                     part='snippet,replies',
                     videoId=video['id'],
-                    maxResults=min(100, max_comments - retrieved),
+                    maxResults=min(100, max_threads - retrieved),
                     pageToken=next_page,
                     textFormat='plainText',
                 )
-                response = self._api_call(request, f"comments for {video['id']}")
+                response = self._api_call(request, f"threads for {video['id']}")
 
                 for item in response.get('items', []):
-                    # Top-level comment
-                    comment = self._parse_comment(item, video)
-                    if comment:
-                        yield comment
+                    thread = self._build_thread(item, video,
+                                                skip_creator_top, include_replies)
+                    if thread is not None:
+                        yield thread
                         retrieved += 1
 
-                    # Inline replies (saves an extra API request vs. fetching separately)
-                    if include_replies and 'replies' in item:
-                        for reply_item in item['replies']['comments']:
-                            reply = self._parse_reply(reply_item, item, video)
-                            if reply:
-                                yield reply
-
-                    if retrieved >= max_comments:
+                    if retrieved >= max_threads:
                         break
 
                 next_page = response.get('nextPageToken')
@@ -374,447 +372,144 @@ class YouTubeClient:
 
             except HttpError as e:
                 if 'commentsDisabled' in str(e):
-                    self.logger.info(f"   Comments disabled for: {video['title'][:40]}...")
+                    self.logger.info(f"   Comments disabled: {video['title'][:40]}...")
                 else:
-                    self.logger.warning(f"   Error getting comments: {e}")
+                    self.logger.warning(f"   Thread fetch error: {e}")
                 break
 
-    def _parse_comment(self, item: Dict, video: Dict) -> Optional[Comment]:
+    def _build_thread(
+        self,
+        item: Dict,
+        video: Dict,
+        skip_creator_top: bool,
+        include_replies: bool,
+    ) -> Optional['Thread']:
         """
-        Parse a commentThread item into a Comment.
+        Build a Thread from a commentThread API item.
 
-        BUG FIX: channel_id is now stored so we can later form
-                 https://youtube.com/channel/{channel_id}
+        BUG FIX (v3): channel_id is now stored.
+        BUG FIX (v3): Creator comments are flagged (is_creator=True) instead of dropped.
+        NEW (v3):     All replies included with is_creator flag.
         """
-        snippet    = item['snippet']['topLevelComment']['snippet']
-        comment_id = item['snippet']['topLevelComment']['id']
+        top_snippet  = item['snippet']['topLevelComment']['snippet']
+        top_id       = item['snippet']['topLevelComment']['id']
 
-        # Skip duplicates
-        if comment_id in self.seen_ids:
+        # Skip duplicate threads
+        if top_id in self.seen_thread_ids:
             return None
-        self.seen_ids.add(comment_id)
+        self.seen_thread_ids.add(top_id)
 
-        # Skip creator's own comments (usually pinned greetings, not modifications)
-        author_channel = snippet.get('authorChannelId', {}).get('value', '')
-        if self.config.get('filtering', 'skip_creator_comments', default=True):
-            if author_channel == video['channel_id']:
-                return None
+        creator_channel = video['channel_id']
+        top_author_ch   = top_snippet.get('authorChannelId', {}).get('value', '')
+        top_is_creator  = (top_author_ch == creator_channel)
 
-        text = snippet['textDisplay']
+        # Skip creator's own top-level comments (usually pinned recipe intro)
+        # BUT: we still collect them as replies if they answer user questions
+        if skip_creator_top and top_is_creator:
+            return None
 
-        return Comment(
-            text=text,
-            like_count=snippet.get('likeCount', 0),
-            video_title=video['title'],
-            channel_title=video['channel_title'],
-            comment_id=comment_id,
-            video_id=video['id'],
-            channel_id=video['channel_id'],          # ← BUG FIX (was missing)
-            word_count=HebrewUtils.word_count(text),
+        top_text = top_snippet['textDisplay']
+
+        top_comment = TopComment(
+            comment_id=top_id,
+            text=top_text,
+            like_count=top_snippet.get('likeCount', 0),
         )
 
-    def _parse_reply(
-        self, reply_item: Dict, parent_item: Dict, video: Dict
-    ) -> Optional[Comment]:
-        """
-        Parse a reply item into a Comment.
+        # Build replies list
+        replies: List[ReplyRecord] = []
+        has_creator_reply = False
+        total_likes = top_comment.like_count
 
-        BUG FIX: channel_id is now stored.
-        """
-        snippet  = reply_item['snippet']
-        reply_id = reply_item['id']
+        if include_replies and 'replies' in item:
+            for reply_item in item['replies']['comments']:
+                r_snippet    = reply_item['snippet']
+                r_id         = reply_item['id']
+                r_author_ch  = r_snippet.get('authorChannelId', {}).get('value', '')
+                r_is_creator = (r_author_ch == creator_channel)
 
-        if reply_id in self.seen_ids:
-            return None
-        self.seen_ids.add(reply_id)
+                reply = ReplyRecord(
+                    comment_id=r_id,
+                    text=r_snippet['textDisplay'],
+                    like_count=r_snippet.get('likeCount', 0),
+                    is_creator=r_is_creator,
+                )
+                replies.append(reply)
+                total_likes += reply.like_count
+                if r_is_creator:
+                    has_creator_reply = True
 
-        text = snippet['textDisplay']
-
-        return Comment(
-            text=text,
-            like_count=snippet.get('likeCount', 0),
+        return Thread(
+            thread_id=top_id,
+            video_id=video['id'],
+            channel_id=video['channel_id'],      # BUG FIX: was missing in v1/v2
             video_title=video['title'],
             channel_title=video['channel_title'],
-            comment_id=reply_id,
-            video_id=video['id'],
-            channel_id=video['channel_id'],          # ← BUG FIX (was missing)
-            word_count=HebrewUtils.word_count(text),
+            source="youtube",
+            top_comment=top_comment,
+            replies=replies,
+            has_creator_reply=has_creator_reply,
+            total_likes=total_likes,
         )
 
-    # -------------------------------------------------------------------------
-    # FILTERING + ENRICHMENT
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
+    # FILTERING
+    # ─────────────────────────────────────────────────────────────────────────
 
-    def filter_comment(self, comment: Comment) -> Tuple[bool, str]:
+    def filter_thread(self, thread: Thread) -> Tuple[bool, str]:
         """
-        Decide whether to keep a comment.
+        Decide whether to keep a thread.
 
-        Returns:
-            (keep: bool, reason: str)  — reason explains why it was dropped
+        Filtering logic:
+          1. Top comment must have Hebrew (or at least one reply must)
+          2. Minimum word count on top comment
+          3. No spam
+          4. If top comment is a question and has NO meaningful replies → discard
+             (A question with no answer has zero signal value)
         """
-        if self.config.get('filtering', 'require_hebrew', default=True):
-            if not HebrewUtils.contains_hebrew(comment.text):
+        top_text = thread.top_comment.text
+        all_texts = [top_text] + [r.text for r in thread.replies]
+
+        # Hebrew check — at least one text in the thread must be Hebrew
+        require_hebrew = self.config.get('filtering', 'require_hebrew', default=True)
+        if require_hebrew:
+            if not any(HebrewUtils.contains_hebrew(t) for t in all_texts):
                 return False, "no_hebrew"
 
+        # Min word count on top comment
         min_words = self.config.get('filtering', 'min_words', default=5)
-        if comment.word_count < min_words:
+        if HebrewUtils.word_count(top_text) < min_words:
             return False, "too_short"
 
-        spam_keywords = self.config.get('filtering', 'spam_keywords', default=[])
-        if HebrewUtils.is_spam(comment.text, spam_keywords):
+        # Spam check
+        spam_kws = self.config.get('filtering', 'spam_keywords', default=[])
+        if HebrewUtils.is_spam(top_text, spam_kws):
             return False, "spam"
+
+        # Question with no meaningful replies = no signal
+        if HebrewUtils.is_question(top_text):
+            meaningful = [r for r in thread.replies
+                         if not HebrewUtils.is_unhelpful_reply(r.text)
+                         and HebrewUtils.contains_hebrew(r.text)]
+            if not meaningful:
+                return False, "question_unanswered"
 
         return True, ""
 
-    def enrich_comment(self, comment: Comment) -> Comment:
-        """Pre-compute modification keyword flags for faster downstream filtering."""
-        keywords = self.config.get_all_modification_keywords()
-        found = HebrewUtils.find_keywords(comment.text, keywords)
-        comment.has_modification_keyword = len(found) > 0
-        comment.detected_keywords = found
-        return comment
-
-
-# =============================================================================
-# CHANNEL REPORT GENERATOR  (no API key needed)
-# =============================================================================
-
-def generate_channel_report(
-    comments_file: str,
-    output_dir: str = None,
-) -> None:
-    """
-    Read an existing comments.jsonl and produce a channel verification report.
-
-    Outputs two files:
-      channels_report.txt   — human-readable with clickable YouTube links
-      channels_report.csv   — open in Excel, fill in is_cooking_channel (YES/NO)
-
-    Usage (no API key required):
-        python collect.py --list-channels
-        python collect.py --list-channels --input data/raw_youtube/comments.jsonl
-    """
-    input_path = Path(comments_file)
-    if not input_path.exists():
-        print(f"❌ File not found: {comments_file}")
-        print("   Run --collect first to gather comments.")
-        return
-
-    if output_dir is None:
-        output_dir = input_path.parent
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    print(f"\n📂 Reading: {comments_file}")
-
-    # ── Aggregate by channel ──────────────────────────────────────────────────
-    # channel_title → { channel_id, video_ids (ordered), video_titles, comment_count }
-    channel_data: Dict[str, Dict] = defaultdict(lambda: {
-        'channel_id':    '',
-        'video_ids':     [],        # ordered list, for sample links
-        'video_titles':  {},        # video_id → title
-        'comment_count': 0,
-    })
-
-    total_comments = 0
-    with open(input_path, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                c = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            name = c.get('channel_title', 'Unknown Channel')
-            ch   = channel_data[name]
-
-            # Prefer channel_id from the new format (field added in this bug-fix release)
-            if c.get('channel_id') and not ch['channel_id']:
-                ch['channel_id'] = c['channel_id']
-
-            vid_id    = c.get('video_id', '')
-            vid_title = c.get('video_title', '')
-            if vid_id and vid_id not in ch['video_titles']:
-                ch['video_ids'].append(vid_id)
-                ch['video_titles'][vid_id] = vid_title
-
-            ch['comment_count'] += 1
-            total_comments += 1
-
-    if not channel_data:
-        print("⚠️  No comments found in file.")
-        return
-
-    # Sort channels by descending comment count
-    sorted_channels = sorted(
-        channel_data.items(), key=lambda x: -x[1]['comment_count']
-    )
-
-    # ── TXT report ───────────────────────────────────────────────────────────
-    txt_path = output_dir / "channels_report.txt"
-    with open(txt_path, 'w', encoding='utf-8') as f:
-        f.write("=" * 80 + "\n")
-        f.write("CHANNEL VERIFICATION REPORT\n")
-        f.write(f"Generated : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"Source    : {comments_file}\n")
-        f.write(
-            f"Total     : {total_comments:,} comments  |  "
-            f"{len(sorted_channels)} unique channels\n"
-        )
-        f.write("=" * 80 + "\n\n")
-        f.write("INSTRUCTIONS:\n")
-        f.write("  1. Open each YouTube link below.\n")
-        f.write("  2. Check whether it is a COOKING channel.\n")
-        f.write("  3. Mark [ ] as [YES] (cooking) or [NO] (not cooking).\n")
-        f.write("  4. For faster review, use channels_report.csv in Excel.\n")
-        f.write("  5. Run --filter-channels to remove non-cooking comments.\n\n")
-        f.write("-" * 80 + "\n\n")
-
-        for rank, (ch_name, data) in enumerate(sorted_channels, 1):
-            ch_id     = data['channel_id']
-            count     = data['comment_count']
-            vid_count = len(data['video_ids'])
-
-            f.write(f"  #{rank:02d}  [ ] {ch_name}\n")
-            f.write(f"        Comments : {count:,}  |  Videos seen : {vid_count}\n")
-
-            if ch_id:
-                f.write(
-                    f"        Channel  : https://www.youtube.com/channel/{ch_id}\n"
-                )
-            else:
-                f.write(
-                    f"        Channel  : (channel_id not in data — see video links below;\n"
-                    f"                    re-collect with updated script to get channel URLs)\n"
-                )
-
-            # Up to 3 sample video links
-            f.write(f"        Videos   :\n")
-            for vid_id in data['video_ids'][:3]:
-                title = data['video_titles'].get(vid_id, 'Unknown Title')
-                f.write(
-                    f"          • {title[:55]:<55}  "
-                    f"https://youtube.com/watch?v={vid_id}\n"
-                )
-            f.write("\n")
-
-        f.write("=" * 80 + "\n")
-        f.write(
-            f"Total: {len(sorted_channels)} channels  |  {total_comments:,} comments\n"
-        )
-
-    print(f"📄 Text report  →  {txt_path}")
-
-    # ── CSV report (for Excel) ────────────────────────────────────────────────
-    csv_path = output_dir / "channels_report.csv"
-    with open(csv_path, 'w', encoding='utf-8-sig', newline='') as f:  # utf-8-sig = Excel BOM
-        writer = csv.writer(f)
-        writer.writerow([
-            'rank',
-            'channel_name',
-            'channel_id',
-            'channel_url',
-            'comment_count',
-            'video_count',
-            'sample_video_1_title', 'sample_video_1_url',
-            'sample_video_2_title', 'sample_video_2_url',
-            'sample_video_3_title', 'sample_video_3_url',
-            'is_cooking_channel',   # ← Fill in: YES or NO
-            'notes',
-        ])
-
-        for rank, (ch_name, data) in enumerate(sorted_channels, 1):
-            ch_id  = data['channel_id']
-            ch_url = (
-                f"https://www.youtube.com/channel/{ch_id}" if ch_id else ""
-            )
-
-            row = [
-                rank,
-                ch_name,
-                ch_id,
-                ch_url,
-                data['comment_count'],
-                len(data['video_ids']),
-            ]
-
-            for i in range(3):
-                if i < len(data['video_ids']):
-                    vid_id = data['video_ids'][i]
-                    title  = data['video_titles'].get(vid_id, '')
-                    row.append(title)
-                    row.append(f"https://youtube.com/watch?v={vid_id}")
-                else:
-                    row.append('')
-                    row.append('')
-
-            row.append('')   # is_cooking_channel — user fills this in
-            row.append('')   # notes
-            writer.writerow(row)
-
-    print(f"📊 CSV report   →  {csv_path}")
-
-    # ── Console summary ───────────────────────────────────────────────────────
-    print(f"\n{'=' * 72}")
-    print(
-        f"CHANNEL SUMMARY  "
-        f"({total_comments:,} comments, {len(sorted_channels)} channels)"
-    )
-    print(f"{'=' * 72}")
-    print(f"  {'#':>3}  {'Channel Name':<40}  {'ID':<24}  {'Comments':>9}")
-    print(f"  {'-'*3}  {'-'*40}  {'-'*24}  {'-'*9}")
-    for rank, (ch_name, data) in enumerate(sorted_channels, 1):
-        ch_id_display = data['channel_id'] or '(unknown — re-collect)'
-        print(
-            f"  {rank:>3}  {ch_name:<40}  {ch_id_display:<24}  "
-            f"{data['comment_count']:>9,}"
-        )
-    print(f"{'=' * 72}")
-    print()
-    print("✅ Next steps:")
-    print("   1. Open channels_report.csv in Excel")
-    print("   2. Fill in is_cooking_channel column: YES or NO")
-    print("   3. Run: python collect.py --filter-channels \\")
-    print(f"               --input {comments_file} \\")
-    print(f"               --csv   {csv_path}")
-    print()
-
-
-# =============================================================================
-# CHANNEL FILTER  (no API key needed)
-# =============================================================================
-
-def filter_channels_from_jsonl(
-    comments_file: str,
-    csv_report: str,
-    output_file: Optional[str] = None,
-) -> None:
-    """
-    After manually filling is_cooking_channel in channels_report.csv,
-    use this to strip non-cooking channel comments from comments.jsonl.
-
-    Channels with an empty is_cooking_channel cell are KEPT (conservative default).
-
-    Usage:
-        python collect.py --filter-channels \\
-            --input  data/raw_youtube/comments.jsonl \\
-            --csv    data/raw_youtube/channels_report.csv \\
-            --output data/raw_youtube/comments_cooking_only.jsonl
-    """
-    csv_path = Path(csv_report)
-    if not csv_path.exists():
-        print(f"❌ CSV report not found: {csv_report}")
-        print("   Run --list-channels first, fill in the CSV, then run --filter-channels.")
-        return
-
-    # Parse verdicts
-    approved: set = set()
-    rejected: set = set()
-
-    with open(csv_path, 'r', encoding='utf-8-sig') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            name    = row.get('channel_name', '').strip()
-            verdict = row.get('is_cooking_channel', '').strip().upper()
-            if verdict in ('YES', 'Y', '1', 'TRUE', 'COOKING'):
-                approved.add(name)
-            elif verdict in ('NO', 'N', '0', 'FALSE', 'NOT-COOKING', 'NOT COOKING'):
-                rejected.add(name)
-            else:
-                # Empty or unknown → conservative: keep the channel
-                approved.add(name)
-
-    print(f"\n📋 Channel verdicts:")
-    print(f"   Approved (COOKING)     : {len(approved)} channels")
-    print(f"   Rejected (NOT-COOKING) : {len(rejected)} channels")
-
-    if rejected:
-        print("\n   Channels to be removed:")
-        for name in sorted(rejected):
-            print(f"     ✗  {name}")
-
-    if not approved and not rejected:
-        print("⚠️  No verdicts found in CSV. Fill in 'is_cooking_channel' column first.")
-        return
-
-    # Filter JSONL
-    input_path = Path(comments_file)
-    if not input_path.exists():
-        print(f"❌ Input not found: {comments_file}")
-        return
-
-    if output_file is None:
-        output_path = input_path.parent / (input_path.stem + "_cooking_only.jsonl")
-    else:
-        output_path = Path(output_file)
-
-    kept    = 0
-    removed = 0
-
-    with open(input_path, 'r', encoding='utf-8') as fin, \
-         open(output_path, 'w', encoding='utf-8') as fout:
-        for line in fin:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                c       = json.loads(line)
-                ch_name = c.get('channel_title', '')
-                if ch_name not in rejected:
-                    fout.write(line + '\n')
-                    kept += 1
-                else:
-                    removed += 1
-            except json.JSONDecodeError:
-                continue
-
-    print(f"\n✅ Filtering complete:")
-    print(f"   Kept    : {kept:,} comments")
-    print(f"   Removed : {removed:,} comments")
-    print(f"   Output  : {output_path}")
+    def enrich_thread(self, thread: Thread) -> Thread:
+        """Pre-compute modification keyword detection on the thread text."""
+        kws = self.config.get_modification_keywords()
+        all_text = thread.top_comment.text + " " + " ".join(r.text for r in thread.replies)
+        # We don't store keywords on the thread — teacher labeling does the real work
+        # This is just a fast pre-filter signal
+        return thread
 
 
 # =============================================================================
 # CHANNELS.YAML WRITER
 # =============================================================================
 
-def write_channels_yaml(
-    channels: List[Dict],
-    channels_path: str,
-    existing_data: Dict,
-) -> None:
-    """
-    Write discovered channels back to channels.yaml.
-
-    - All channels get active: true (user deletes the ones they don't want)
-    - Preserves discovery_queries and any other top-level keys
-    - Adds a youtube_url comment next to each channel for easy review
-    """
-    channels_file = Path(channels_path)
-
-    # Build the new channels list as structured dicts
-    channel_entries = []
-    for ch in channels:
-        ch_url = f"https://www.youtube.com/channel/{ch['id']}"
-        entry = {
-            'name':        ch['name'],
-            'id':          ch['id'],
-            'active':      True,
-            'category':    'cooking',
-            'subscribers': ch.get('subscribers', 0),
-            'youtube_url': ch_url,   # Added so user can click straight from the file
-            'notes':       ch.get('description', '')[:100].replace('\n', ' ').strip(),
-        }
-        channel_entries.append(entry)
-
-    # Merge: keep existing top-level keys (discovery_queries, etc.) but replace channels list
-    output_data = dict(existing_data)
-    output_data['channels'] = channel_entries
-
-    # Dump with a UTF-8-safe, human-readable format
-    # PyYAML doesn't support inline comments, so we write a custom header then yaml.dump
+def write_channels_yaml(channels: List[Dict], channels_path: str, existing_data: Dict) -> None:
     header = (
         "# =============================================================================\n"
         "# HEBREW COOKING CHANNELS — AUTO-GENERATED BY --discover-all\n"
@@ -827,20 +522,183 @@ def write_channels_yaml(
         "#   4. Run:  python collect.py --collect\n"
         "# =============================================================================\n\n"
     )
+    entries = []
+    for ch in channels:
+        entries.append({
+            'name':        ch['name'],
+            'id':          ch['id'],
+            'active':      True,
+            'category':    'cooking',
+            'subscribers': ch.get('subscribers', 0),
+            'youtube_url': f"https://www.youtube.com/channel/{ch['id']}",
+            'notes':       ch.get('description', '')[:100].replace('\n', ' ').strip(),
+        })
+    out = dict(existing_data)
+    out['channels'] = entries
+    yaml_str = yaml.dump(out, allow_unicode=True, default_flow_style=False,
+                         sort_keys=False, width=120)
+    with open(channels_path, 'w', encoding='utf-8') as f:
+        f.write(header + yaml_str)
+    print(f"💾 Written to: {channels_path}")
 
-    yaml_str = yaml.dump(
-        output_data,
-        allow_unicode=True,
-        default_flow_style=False,
-        sort_keys=False,
-        width=120,
-    )
 
-    with open(channels_file, 'w', encoding='utf-8') as f:
-        f.write(header)
-        f.write(yaml_str)
+# =============================================================================
+# CHANNEL REPORT  (no API key needed)
+# =============================================================================
 
-    print(f"💾 Written to: {channels_file}")
+def generate_channel_report(threads_file: str, output_dir: str = None) -> None:
+    """
+    Read existing threads.jsonl → produce channels_report.txt + channels_report.csv
+    for manual cooking/not-cooking review. No API key needed.
+    """
+    input_path = Path(threads_file)
+    if not input_path.exists():
+        print(f"❌ File not found: {threads_file}")
+        print("   Run --collect first.")
+        return
+
+    output_dir = Path(output_dir or input_path.parent)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"\n📂 Reading: {threads_file}")
+
+    channel_data: Dict[str, Dict] = defaultdict(lambda: {
+        'channel_id': '', 'video_ids': [], 'video_titles': {}, 'thread_count': 0
+    })
+    total = 0
+
+    with open(input_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                t = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            name = t.get('channel_title', 'Unknown')
+            ch   = channel_data[name]
+            if t.get('channel_id') and not ch['channel_id']:
+                ch['channel_id'] = t['channel_id']
+            vid_id = t.get('video_id', '')
+            if vid_id and vid_id not in ch['video_titles']:
+                ch['video_ids'].append(vid_id)
+                ch['video_titles'][vid_id] = t.get('video_title', '')
+            ch['thread_count'] += 1
+            total += 1
+
+    if not channel_data:
+        print("⚠️  No threads found.")
+        return
+
+    sorted_ch = sorted(channel_data.items(), key=lambda x: -x[1]['thread_count'])
+
+    # TXT
+    txt_path = output_dir / "channels_report.txt"
+    with open(txt_path, 'w', encoding='utf-8') as f:
+        f.write("=" * 80 + "\n")
+        f.write(f"CHANNEL VERIFICATION REPORT\n")
+        f.write(f"Source : {threads_file}\n")
+        f.write(f"Total  : {total:,} threads  |  {len(sorted_ch)} channels\n")
+        f.write("=" * 80 + "\n\n")
+        f.write("INSTRUCTIONS: Mark [ ] as [YES] (cooking) or [NO] (not cooking).\n")
+        f.write("Then run: python collect.py --filter-channels --input threads.jsonl --csv channels_report.csv\n\n")
+        f.write("-" * 80 + "\n\n")
+        for i, (name, d) in enumerate(sorted_ch, 1):
+            ch_id = d['channel_id']
+            f.write(f"  #{i:02d}  [ ] {name}\n")
+            f.write(f"        Threads : {d['thread_count']:,}  |  Videos: {len(d['video_ids'])}\n")
+            if ch_id:
+                f.write(f"        Channel : https://www.youtube.com/channel/{ch_id}\n")
+            for vid_id in d['video_ids'][:3]:
+                title = d['video_titles'].get(vid_id, '')
+                f.write(f"          • {title[:55]:<55}  https://youtube.com/watch?v={vid_id}\n")
+            f.write("\n")
+
+    # CSV
+    csv_path = output_dir / "channels_report.csv"
+    with open(csv_path, 'w', encoding='utf-8-sig', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['rank','channel_name','channel_id','channel_url','thread_count',
+                         'video_count','v1_title','v1_url','v2_title','v2_url','v3_title','v3_url',
+                         'is_cooking_channel','notes'])
+        for i, (name, d) in enumerate(sorted_ch, 1):
+            ch_id = d['channel_id']
+            ch_url = f"https://www.youtube.com/channel/{ch_id}" if ch_id else ""
+            row = [i, name, ch_id, ch_url, d['thread_count'], len(d['video_ids'])]
+            for j in range(3):
+                if j < len(d['video_ids']):
+                    vid = d['video_ids'][j]
+                    row += [d['video_titles'].get(vid,''), f"https://youtube.com/watch?v={vid}"]
+                else:
+                    row += ['', '']
+            row += ['', '']
+            writer.writerow(row)
+
+    print(f"📄 TXT report → {txt_path}")
+    print(f"📊 CSV report → {csv_path}")
+
+    print(f"\n{'='*72}")
+    print(f"  {'#':>3}  {'Channel Name':<40}  {'Threads':>9}")
+    print(f"  {'-'*3}  {'-'*40}  {'-'*9}")
+    for i, (name, d) in enumerate(sorted_ch, 1):
+        print(f"  {i:>3}  {name:<40}  {d['thread_count']:>9,}")
+    print(f"{'='*72}\n")
+
+
+# =============================================================================
+# CHANNEL FILTER  (no API key needed)
+# =============================================================================
+
+def filter_channels_from_jsonl(
+    threads_file: str, csv_report: str, output_file: Optional[str] = None
+) -> None:
+    """Remove non-cooking channel threads after manual CSV review."""
+    csv_path = Path(csv_report)
+    if not csv_path.exists():
+        print(f"❌ CSV not found: {csv_report}")
+        return
+
+    approved, rejected = set(), set()
+    with open(csv_path, 'r', encoding='utf-8-sig') as f:
+        for row in csv.DictReader(f):
+            name    = row.get('channel_name', '').strip()
+            verdict = row.get('is_cooking_channel', '').strip().upper()
+            if verdict in ('YES','Y','1','TRUE','COOKING'):
+                approved.add(name)
+            elif verdict in ('NO','N','0','FALSE','NOT-COOKING','NOT COOKING'):
+                rejected.add(name)
+            else:
+                approved.add(name)   # conservative default: keep if unsure
+
+    print(f"\n📋 Approved: {len(approved)}  |  Rejected: {len(rejected)}")
+    if rejected:
+        print("   Removing:")
+        for n in sorted(rejected):
+            print(f"     ✗ {n}")
+
+    input_path = Path(threads_file)
+    output_path = Path(output_file) if output_file else \
+        input_path.parent / (input_path.stem + "_cooking_only.jsonl")
+
+    kept = removed = 0
+    with open(input_path, 'r', encoding='utf-8') as fin, \
+         open(output_path, 'w', encoding='utf-8') as fout:
+        for line in fin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                t = json.loads(line)
+                if t.get('channel_title', '') not in rejected:
+                    fout.write(line + '\n')
+                    kept += 1
+                else:
+                    removed += 1
+            except json.JSONDecodeError:
+                continue
+
+    print(f"\n✅ Kept: {kept:,}  |  Removed: {removed:,}")
+    print(f"   Output: {output_path}")
 
 
 # =============================================================================
@@ -848,316 +706,232 @@ def write_channels_yaml(
 # =============================================================================
 
 class Collector:
-    """Orchestrates collection across channels, handles save and reporting."""
+    def __init__(self, api_key: str, config_path: str = "config.yaml",
+                 channels_path: str = "channels.yaml"):
+        self.config       = Config(config_path, channels_path)
+        self.client       = YouTubeClient(api_key, self.config)
+        self.collected:    List[Thread] = []
+        self.channels_path = channels_path
 
-    def __init__(
-        self,
-        api_key: str,
-        config_path: str = "config.yaml",
-        channels_path: str = "channels.yaml",
-    ):
-        self.config   = Config(config_path, channels_path)
-        self.client   = YouTubeClient(api_key, self.config)
-        self.collected: List[Comment] = []
-
-        output_dir = self.config.get('output', 'directory', default='./data/raw_youtube')
-        self.output_dir = Path(output_dir)
+        out_dir = self.config.get('output', 'directory', default='./data/raw_youtube')
+        self.output_dir = Path(out_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+    # ─── DISCOVER ────────────────────────────────────────────────────────────
+
     def discover_channels(self, query: str) -> None:
-        """Search for channels and print a summary with YouTube URLs."""
-        print(f"\n🔍 Searching for channels: '{query}'\n")
-        print("=" * 70)
-
+        print(f"\n🔍 Searching: '{query}'\n{'='*70}")
         channels = self.client.search_channels(query, max_results=10)
-
         if not channels:
             print("No channels found.")
             return
-
-        print(f"Found {len(channels)} channels:\n")
         for i, ch in enumerate(channels, 1):
-            ch_url = f"https://www.youtube.com/channel/{ch['id']}"
             print(f"{i}. {ch['name']}")
             print(f"   ID          : {ch['id']}")
-            print(f"   YouTube URL : {ch_url}")          # ← added for easy verification
+            print(f"   YouTube URL : https://www.youtube.com/channel/{ch['id']}")
             print(f"   Subscribers : {ch['subscribers']:,} | Videos: {ch['videos']}")
             print(f"   Description : {ch['description'][:80]}...")
             print()
-
-        print("=" * 70)
-        print("\nTo add a channel, copy its ID to channels.yaml:")
-        print("""
-  - name: "Channel Name"
-    id: "UC_PASTE_ID_HERE"
-    active: true
-    category: "cooking"
-""")
-
-    def discover_all_channels(self, channels_path: str = "channels.yaml") -> None:
-        """
-        Run every query listed under discovery_queries in channels.yaml,
-        deduplicate results, and write them ALL back to channels.yaml
-        with active: true so the user can just delete the ones they don't want.
-
-        Usage:
-            python collect.py --discover-all
-        """
-        # Read existing channels.yaml to get the discovery_queries list
-        channels_file = Path(channels_path)
-        if channels_file.exists():
-            with open(channels_file, 'r', encoding='utf-8') as f:
-                existing_data = yaml.safe_load(f) or {}
-        else:
-            existing_data = {}
-
-        queries = existing_data.get('discovery_queries', [
-            "מתכונים בישול",
-            "אפייה ביתית",
-            "בישול ישראלי",
-            "עוגות ומאפים",
-            "מתכונים קלים",
-            "שף ישראלי",
-            "בישול בריא",
-            "קינוחים",
-            "ארוחות משפחתיות",
-            "מתכונים לשבת",
-        ])
-
-        print(f"\n🔍 Auto-discovering channels from {len(queries)} queries...\n")
         print("=" * 70)
 
-        # Collect all channels, dedup by channel ID
-        seen_ids: Dict[str, Dict] = {}
+    def discover_all_channels(self) -> None:
+        """Run all discovery queries → write all results to channels.yaml."""
+        ch_file = Path(self.channels_path)
+        existing = yaml.safe_load(ch_file.read_text(encoding='utf-8')) or {} \
+            if ch_file.exists() else {}
 
+        queries = self.config.get_discovery_queries()
+        print(f"\n🔍 Auto-discovering from {len(queries)} queries...\n{'='*70}")
+
+        seen: Dict[str, Dict] = {}
         for query in queries:
             print(f"\n▶  Query: '{query}'")
             try:
                 results = self.client.search_channels(query, max_results=10)
-                new_count = 0
+                new = sum(1 for r in results if r['id'] not in seen)
                 for ch in results:
-                    if ch['id'] not in seen_ids:
-                        seen_ids[ch['id']] = ch
-                        new_count += 1
-                print(f"   Found {len(results)} channels  ({new_count} new, {len(results)-new_count} duplicates)")
-                time.sleep(1.0)   # Be polite between queries
+                    seen.setdefault(ch['id'], ch)
+                print(f"   {len(results)} channels ({new} new)")
+                time.sleep(1.0)
             except Exception as e:
-                print(f"   ⚠️  Query failed: {e}")
-                continue
+                print(f"   ⚠️ Failed: {e}")
 
-        if not seen_ids:
-            print("\n⚠️  No channels found. Check your API key.")
+        if not seen:
+            print("\n⚠️  No channels found.")
             return
 
-        # Sort by subscriber count descending
-        all_channels = sorted(seen_ids.values(), key=lambda x: -x.get('subscribers', 0))
+        all_ch = sorted(seen.values(), key=lambda x: -x.get('subscribers', 0))
 
-        print(f"\n{'=' * 70}")
-        print(f"DISCOVERED {len(all_channels)} UNIQUE CHANNELS")
-        print(f"{'=' * 70}")
+        print(f"\n{'='*70}\nDISCOVERED {len(all_ch)} UNIQUE CHANNELS\n{'='*70}")
         print(f"  {'#':>3}  {'Channel Name':<40}  {'Subs':>10}  {'Videos':>7}")
-        print(f"  {'-'*3}  {'-'*40}  {'-'*10}  {'-'*7}")
-        for i, ch in enumerate(all_channels, 1):
-            print(
-                f"  {i:>3}  {ch['name']:<40}  "
-                f"{ch['subscribers']:>10,}  {ch['videos']:>7,}"
-            )
-        print(f"{'=' * 70}")
+        for i, ch in enumerate(all_ch, 1):
+            print(f"  {i:>3}  {ch['name']:<40}  {ch['subscribers']:>10,}  {ch['videos']:>7,}")
+        print(f"{'='*70}")
 
-        # Write back to channels.yaml
-        write_channels_yaml(all_channels, channels_path, existing_data)
+        write_channels_yaml(all_ch, self.channels_path, existing)
 
-        print(f"\n✅ channels.yaml updated with {len(all_channels)} channels (all active: true)")
-        print(f"\n📋 NEXT STEPS:")
-        print(f"   1. Open channels.yaml")
-        print(f"   2. Review each channel — click the YouTube URL in the file")
-        print(f"   3. DELETE the entire block for any non-cooking channel")
-        print(f"      (or set active: false to just disable without deleting)")
-        print(f"   4. Run:  python collect.py --collect")
+        print(f"\n✅ channels.yaml updated with {len(all_ch)} channels (all active: true)")
+        print("\n📋 NEXT STEPS:")
+        print("   1. Open channels.yaml")
+        print("   2. Click youtube_url for each channel to verify it's cooking")
+        print("   3. DELETE non-cooking channel blocks (or set active: false)")
+        print("   4. Run: python collect.py --collect")
 
-    def collect_from_channel(
-        self, channel_id: str, channel_name: str = "Unknown"
-    ) -> List[Comment]:
-        """Collect and filter comments from one channel."""
-        ch_url = f"https://www.youtube.com/channel/{channel_id}"
-        print(f"\n📺 Collecting from: {channel_name}")
-        print(f"   Channel URL : {ch_url}")
+    # ─── COLLECT ─────────────────────────────────────────────────────────────
 
-        max_videos   = self.config.get('collection', 'max_videos_per_channel', default=50)
-        max_comments = self.config.get('collection', 'max_comments_per_video', default=100)
-        delay        = self.config.get('api', 'delay_between_videos', default=0.5)
+    def collect_from_channel(self, channel_id: str, channel_name: str = "Unknown") -> List[Thread]:
+        print(f"\n📺 {channel_name}")
+        print(f"   URL: https://www.youtube.com/channel/{channel_id}")
 
-        channel_comments = []
-        videos_processed = 0
+        max_videos  = self.config.get('collection', 'max_videos_per_channel', default=100)
+        max_threads = self.config.get('collection', 'max_threads_per_video',  default=200)
+        delay       = self.config.get('api', 'delay_between_videos', default=0.5)
+
+        channel_threads = []
+        vp = 0
 
         for video in self.client.get_channel_videos(channel_id, max_videos):
-            videos_processed += 1
+            vp += 1
             self.client.stats.videos_processed += 1
+            print(f"   [{vp}/{max_videos}] {video['title'][:55]}...")
 
-            print(f"   [{videos_processed}/{max_videos}] {video['title'][:55]}...")
-
-            video_comments = 0
-            for comment in self.client.get_video_comments(video, max_comments):
-                self.client.stats.comments_found += 1
-
-                keep, reason = self.client.filter_comment(comment)
+            video_kept = 0
+            for thread in self.client.get_video_threads(video, max_threads):
+                self.client.stats.threads_found += 1
+                keep, reason = self.client.filter_thread(thread)
                 if keep:
-                    comment = self.client.enrich_comment(comment)
-                    channel_comments.append(comment)
-                    self.client.stats.comments_kept += 1
-                    video_comments += 1
+                    channel_threads.append(thread)
+                    self.client.stats.threads_kept += 1
+                    video_kept += 1
                 else:
-                    self.client.stats.comments_filtered += 1
-                    self.client.stats.filter_reasons[reason] = (
+                    self.client.stats.threads_filtered += 1
+                    self.client.stats.filter_reasons[reason] = \
                         self.client.stats.filter_reasons.get(reason, 0) + 1
-                    )
 
-            if video_comments > 0:
-                print(f"       → {video_comments} comments kept")
-
+            if video_kept:
+                print(f"       → {video_kept} threads kept")
             time.sleep(delay)
 
         self.client.stats.channels_processed += 1
-        print(f"   ✓ Channel total: {len(channel_comments):,} comments")
+        print(f"   ✓ Channel total: {len(channel_threads):,} threads")
+        return channel_threads
 
-        return channel_comments
-
-    def collect_from_video(self, video_id: str) -> List[Comment]:
-        """Collect comments from a single video (useful for quick tests)."""
-        print(f"\n📹 Collecting from video: {video_id}")
-        print(f"   URL: https://www.youtube.com/watch?v={video_id}")
-
-        max_comments = self.config.get('collection', 'max_comments_per_video', default=100)
-
-        # Fetch video metadata so channel_id and title are real values
-        video = {
-            'id':            video_id,
-            'title':         f'Video {video_id}',
-            'channel_id':    'unknown',
-            'channel_title': 'Unknown Channel',
-        }
+    def collect_from_video(self, video_id: str) -> List[Thread]:
+        print(f"\n📹 Video: https://www.youtube.com/watch?v={video_id}")
+        max_threads = self.config.get('collection', 'max_threads_per_video', default=200)
+        video = {'id': video_id, 'title': f'Video {video_id}',
+                 'channel_id': 'unknown', 'channel_title': 'Unknown Channel'}
         try:
-            request  = self.client.youtube.videos().list(part='snippet', id=video_id)
-            response = self.client._api_call(request, "video details")
-            if response.get('items'):
-                item = response['items'][0]
-                video['title']         = item['snippet']['title']
-                video['channel_id']    = item['snippet']['channelId']
-                video['channel_title'] = item['snippet']['channelTitle']
+            resp = self.client._api_call(
+                self.client.youtube.videos().list(part='snippet', id=video_id), "video details")
+            if resp.get('items'):
+                s = resp['items'][0]['snippet']
+                video.update({'title': s['title'], 'channel_id': s['channelId'],
+                              'channel_title': s['channelTitle']})
                 print(f"   Title   : {video['title']}")
                 print(f"   Channel : {video['channel_title']}")
         except Exception as e:
-            print(f"   ⚠️  Could not fetch video details: {e}")
+            print(f"   ⚠️ Could not fetch video details: {e}")
 
-        video_comments = []
-        for comment in self.client.get_video_comments(video, max_comments):
-            self.client.stats.comments_found += 1
-            keep, reason = self.client.filter_comment(comment)
+        threads = []
+        for thread in self.client.get_video_threads(video, max_threads):
+            keep, _ = self.client.filter_thread(thread)
             if keep:
-                comment = self.client.enrich_comment(comment)
-                video_comments.append(comment)
-                self.client.stats.comments_kept += 1
-            else:
-                self.client.stats.comments_filtered += 1
-                self.client.stats.filter_reasons[reason] = (
-                    self.client.stats.filter_reasons.get(reason, 0) + 1
-                )
-
-        print(f"   ✓ Collected {len(video_comments)} comments")
-        return video_comments
+                threads.append(thread)
+        print(f"   ✓ {len(threads)} threads collected")
+        return threads
 
     def collect_all(self) -> None:
-        """Collect from all channels marked active: true in channels.yaml."""
         channels = self.config.get_active_channels()
-        target   = self.config.get('collection', 'target_comments', default=3000)
+        target   = self.config.get('collection', 'target_threads', default=30000)
 
         if not channels:
             print("⚠️  No active channels in channels.yaml!")
-            print("   Add channels (active: true) or use --discover to find them.")
             return
 
-        print(f"\n📋 Collecting from {len(channels)} active channels")
-        print(f"   Target : {target:,} comments\n")
+        print(f"\n📋 Collecting from {len(channels)} channels | Target: {target:,} threads\n")
 
-        for channel in channels:
+        for ch in channels:
             if len(self.collected) >= target:
-                print(f"\n✅ Target of {target:,} comments reached. Stopping.")
+                print(f"\n✅ Target of {target:,} threads reached. Stopping.")
                 break
-
-            ch_id   = channel.get('id', '')
-            ch_name = channel.get('name', 'Unknown')
-
-            comments = self.collect_from_channel(ch_id, ch_name)
-            self.collected.extend(comments)
+            threads = self.collect_from_channel(ch.get('id',''), ch.get('name','Unknown'))
+            self.collected.extend(threads)
             print(f"   Running total: {len(self.collected):,} / {target:,}")
+            time.sleep(self.config.get('api', 'delay_between_channels', default=2.0))
 
         self.save_results()
 
+    # ─── SAVE ────────────────────────────────────────────────────────────────
+
+    def _thread_to_dict(self, t: Thread) -> Dict:
+        return {
+            'thread_id':        t.thread_id,
+            'video_id':         t.video_id,
+            'channel_id':       t.channel_id,
+            'video_title':      t.video_title,
+            'channel_title':    t.channel_title,
+            'source':           t.source,
+            'appearance_count': t.appearance_count,
+            'top_comment': {
+                'comment_id': t.top_comment.comment_id,
+                'text':       t.top_comment.text,
+                'like_count': t.top_comment.like_count,
+            },
+            'replies': [
+                {'comment_id': r.comment_id, 'text': r.text,
+                 'like_count': r.like_count, 'is_creator': r.is_creator}
+                for r in t.replies
+            ],
+            'has_creator_reply': t.has_creator_reply,
+            'total_likes':       t.total_likes,
+        }
+
     def save_results(self) -> None:
-        """
-        Save comments.jsonl, collection_stats.json, and auto-generate
-        channels_report.txt + channels_report.csv for manual review.
-        """
         if not self.collected:
-            print("\n⚠️  No comments to save")
+            print("\n⚠️  No threads to save")
             return
 
-        # ── comments.jsonl ────────────────────────────────────────────────────
-        comments_file = self.config.get('output', 'comments_file', default='comments.jsonl')
-        comments_path = self.output_dir / comments_file
+        threads_file = self.config.get('output', 'threads_file', default='threads.jsonl')
+        threads_path = self.output_dir / threads_file
 
-        with open(comments_path, 'w', encoding='utf-8') as f:
-            for comment in self.collected:
-                f.write(json.dumps(asdict(comment), ensure_ascii=False) + '\n')
+        with open(threads_path, 'w', encoding='utf-8') as f:
+            for t in self.collected:
+                f.write(json.dumps(self._thread_to_dict(t), ensure_ascii=False) + '\n')
 
-        print(f"\n💾 Saved {len(self.collected):,} comments → {comments_path}")
+        print(f"\n💾 Saved {len(self.collected):,} threads → {threads_path}")
 
-        # ── collection_stats.json ─────────────────────────────────────────────
         self.client.stats.end_time = datetime.now().isoformat()
         stats_file = self.config.get('output', 'stats_file', default='collection_stats.json')
-        stats_path = self.output_dir / stats_file
-
-        with open(stats_path, 'w', encoding='utf-8') as f:
+        with open(self.output_dir / stats_file, 'w', encoding='utf-8') as f:
             json.dump(asdict(self.client.stats), f, indent=2, ensure_ascii=False)
 
-        print(f"📊 Stats           → {stats_path}")
+        print(f"\n🔍 Generating channel report...")
+        generate_channel_report(str(threads_path), str(self.output_dir))
+        self._print_summary()
 
-        # ── auto-generate channel verification report ──────────────────────────
-        print(f"\n🔍 Generating channel verification report...")
-        generate_channel_report(str(comments_path), str(self.output_dir))
-
-        self.print_summary()
-
-    def print_summary(self) -> None:
-        """Print a human-readable collection summary."""
-        stats = self.client.stats
-
-        print("\n" + "=" * 60)
-        print("COLLECTION SUMMARY")
-        print("=" * 60)
-        print(f"  Channels processed : {stats.channels_processed}")
-        print(f"  Videos processed   : {stats.videos_processed}")
-        print(f"  Comments found     : {stats.comments_found:,}")
-        print(f"  Comments kept      : {stats.comments_kept:,}")
-        print(f"  Comments filtered  : {stats.comments_filtered:,}")
-        print(f"  API calls made     : {stats.api_calls}")
-
-        if stats.filter_reasons:
+    def _print_summary(self) -> None:
+        s = self.client.stats
+        print(f"\n{'='*60}\nCOLLECTION SUMMARY\n{'='*60}")
+        print(f"  Channels processed : {s.channels_processed}")
+        print(f"  Videos processed   : {s.videos_processed}")
+        print(f"  Threads found      : {s.threads_found:,}")
+        print(f"  Threads kept       : {s.threads_kept:,}")
+        print(f"  Threads filtered   : {s.threads_filtered:,}")
+        print(f"  API calls          : {s.api_calls}")
+        if s.filter_reasons:
             print("\n  Filter breakdown:")
-            for reason, count in sorted(
-                stats.filter_reasons.items(), key=lambda x: -x[1]
-            ):
+            for reason, count in sorted(s.filter_reasons.items(), key=lambda x: -x[1]):
                 print(f"    - {reason}: {count:,}")
-
         if self.collected:
-            with_kw  = sum(1 for c in self.collected if c.has_modification_keyword)
-            avg_like = sum(c.like_count for c in self.collected) / len(self.collected)
-            print(
-                f"\n  With modification keywords : {with_kw:,} "
-                f"({100 * with_kw / len(self.collected):.1f}%)"
-            )
-            print(f"  Average likes/comment      : {avg_like:.1f}")
-
+            with_replies = sum(1 for t in self.collected if t.replies)
+            with_creator = sum(1 for t in self.collected if t.has_creator_reply)
+            questions    = sum(1 for t in self.collected
+                               if HebrewUtils.is_question(t.top_comment.text))
+            print(f"\n  Threads with replies      : {with_replies:,} "
+                  f"({100*with_replies/len(self.collected):.1f}%)")
+            print(f"  Threads with creator reply: {with_creator:,}")
+            print(f"  Question threads (answered): {questions:,}")
         print("=" * 60)
 
 
@@ -1166,46 +940,42 @@ class Collector:
 # =============================================================================
 
 def test_api(api_key: str, config: Config) -> bool:
-    """Quick 3-step API connectivity test."""
-    print("\n🔧 Testing YouTube API connection...\n")
+    print("\n🔧 Testing YouTube API...\n")
     client = YouTubeClient(api_key, config)
 
-    # 1 – channel search
     print("1. Channel search...")
     try:
         channels = client.search_channels("מתכונים בישול", max_results=2)
         if not channels:
             print("   ✗ No channels found"); return False
-        print(f"   ✓ Found {len(channels)} channels")
+        print(f"   ✓ {len(channels)} channels found")
     except Exception as e:
         print(f"   ✗ {e}"); return False
 
-    # 2 – video fetch
     print("2. Video retrieval...")
     try:
         videos = list(client.get_channel_videos(channels[0]['id'], max_videos=2))
         if not videos:
-            print("   ✗ No videos found"); return False
-        print(f"   ✓ Found {len(videos)} videos")
+            print("   ✗ No videos"); return False
+        print(f"   ✓ {len(videos)} videos found")
     except Exception as e:
         print(f"   ✗ {e}"); return False
 
-    # 3 – comment fetch
-    print("3. Comment retrieval...")
+    print("3. Thread retrieval...")
     try:
-        comments = list(client.get_video_comments(videos[0], max_comments=10))
-        hebrew   = [c for c in comments if HebrewUtils.contains_hebrew(c.text)]
-        print(f"   ✓ {len(comments)} comments  ({len(hebrew)} Hebrew)")
-        if hebrew:
-            s = hebrew[0]
-            print(f"\n   Sample [{s.like_count} likes | channel_id: {s.channel_id}]:")
-            print(f"   {s.text[:100]}...")
+        threads = list(client.get_video_threads(videos[0], max_threads=5))
+        print(f"   ✓ {len(threads)} threads found")
+        for t in threads[:2]:
+            q = " [QUESTION]" if HebrewUtils.is_question(t.top_comment.text) else ""
+            print(f"   Thread{q}: {t.top_comment.text[:60]}...")
+            if t.replies:
+                print(f"     → {len(t.replies)} replies, "
+                      f"creator: {t.has_creator_reply}, "
+                      f"channel_id: {t.channel_id}")
     except Exception as e:
         print(f"   ✗ {e}"); return False
 
-    print("\n" + "=" * 60)
-    print("✅ ALL TESTS PASSED — API is working correctly")
-    print("=" * 60)
+    print(f"\n{'='*60}\n✅ ALL TESTS PASSED\n{'='*60}")
     return True
 
 
@@ -1215,78 +985,54 @@ def test_api(api_key: str, config: Config) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description='YouTube Comment Collector for Recipe Modifications',
+        description='YouTube Thread Collector v3 — Recipe Modifications',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
-  # Requires API key:
+Examples (require API key):
   python collect.py --test
-  python collect.py --discover-all                    # Auto-find ALL channels → channels.yaml
-  python collect.py --discover "מתכונים בישול"        # Single query (manual)
+  python collect.py --discover-all
+  python collect.py --discover "מתכונים בישול"
   python collect.py --channel UCxxxxxxx
   python collect.py --video   VIDEO_ID
   python collect.py --collect
 
-  # No API key needed:
+Examples (no API key):
   python collect.py --list-channels
-  python collect.py --list-channels --input data/raw_youtube/comments.jsonl
-  python collect.py --filter-channels --input comments.jsonl --csv channels_report.csv
-        """,
-    )
+  python collect.py --list-channels --input data/raw_youtube/threads.jsonl
+  python collect.py --filter-channels --input threads.jsonl --csv channels_report.csv
+        """)
 
-    # API key
-    parser.add_argument('--api-key',      type=str, help='YouTube Data API key')
-    parser.add_argument('--api-key-file', type=str, help='File containing the API key')
+    parser.add_argument('--api-key',      type=str)
+    parser.add_argument('--api-key-file', type=str)
+    parser.add_argument('--config',       type=str, default='config.yaml')
+    parser.add_argument('--channels',     type=str, default='channels.yaml')
 
-    # Config
-    parser.add_argument('--config',   type=str, default='config.yaml')
-    parser.add_argument('--channels', type=str, default='channels.yaml')
+    # API actions
+    parser.add_argument('--test',         action='store_true')
+    parser.add_argument('--discover-all', action='store_true')
+    parser.add_argument('--discover',     type=str, metavar='QUERY')
+    parser.add_argument('--channel',      type=str, metavar='ID')
+    parser.add_argument('--video',        type=str, metavar='ID')
+    parser.add_argument('--collect',      action='store_true')
 
-    # Actions (require API key)
-    parser.add_argument('--test',         action='store_true', help='Test API connection')
-    parser.add_argument('--discover-all', action='store_true',
-                        help='Run all discovery_queries → write all channels to channels.yaml')
-    parser.add_argument('--discover',     type=str, metavar='QUERY', help='Search for channels (single query)')
-    parser.add_argument('--channel',      type=str, metavar='ID',    help='Collect from one channel')
-    parser.add_argument('--video',        type=str, metavar='ID',    help='Collect from one video')
-    parser.add_argument('--collect',      action='store_true',       help='Collect from all active channels')
-
-    # Actions (no API key needed)
-    parser.add_argument(
-        '--list-channels', action='store_true',
-        help='Generate channel verification report from existing JSONL (no API key needed)',
-    )
-    parser.add_argument(
-        '--filter-channels', action='store_true',
-        help='Remove non-cooking channels from JSONL using filled CSV (no API key needed)',
-    )
-
-    # Shared file paths
-    parser.add_argument(
-        '--input',  type=str, default='data/raw_youtube/comments.jsonl',
-        help='Input comments.jsonl (used by --list-channels and --filter-channels)',
-    )
-    parser.add_argument(
-        '--csv',    type=str, default='data/raw_youtube/channels_report.csv',
-        help='Filled CSV report (used by --filter-channels)',
-    )
-    parser.add_argument(
-        '--output', type=str, default=None,
-        help='Output path for --filter-channels (default: <input>_cooking_only.jsonl)',
-    )
+    # No-API actions
+    parser.add_argument('--list-channels',    action='store_true')
+    parser.add_argument('--filter-channels',  action='store_true')
+    parser.add_argument('--input',  type=str, default='data/raw_youtube/threads.jsonl')
+    parser.add_argument('--csv',    type=str, default='data/raw_youtube/channels_report.csv')
+    parser.add_argument('--output', type=str, default=None)
 
     args = parser.parse_args()
 
-    # ── No-API commands ────────────────────────────────────────────────────────
+    # No-API commands
     if args.list_channels:
         generate_channel_report(args.input)
         return 0
-
     if args.filter_channels:
         filter_channels_from_jsonl(args.input, args.csv, args.output)
         return 0
 
-    # ── API-key required ───────────────────────────────────────────────────────
+    # API key
     api_key = args.api_key
     if not api_key and args.api_key_file:
         with open(args.api_key_file, 'r') as f:
@@ -1295,43 +1041,33 @@ Examples:
         api_key = os.environ.get('YOUTUBE_API_KEY')
 
     if not api_key:
-        print("❌ No API key provided!")
+        print("❌ No API key provided.")
         print("   Use: --api-key KEY  |  --api-key-file FILE  |  YOUTUBE_API_KEY env var")
-        print("\nNote: --list-channels and --filter-channels work WITHOUT an API key.")
+        print("\nNote: --list-channels and --filter-channels work without an API key.")
         return 1
 
     config = Config(args.config, args.channels)
 
     if args.test:
         return 0 if test_api(api_key, config) else 1
-
     elif args.discover_all:
-        Collector(api_key, args.config, args.channels).discover_all_channels(args.channels)
-        return 0
-
+        Collector(api_key, args.config, args.channels).discover_all_channels()
     elif args.discover:
         Collector(api_key, args.config, args.channels).discover_channels(args.discover)
-        return 0
-
     elif args.channel:
         c = Collector(api_key, args.config, args.channels)
         c.collected = c.collect_from_channel(args.channel)
         c.save_results()
-        return 0
-
     elif args.video:
         c = Collector(api_key, args.config, args.channels)
         c.collected = c.collect_from_video(args.video)
         c.save_results()
-        return 0
-
     elif args.collect:
         Collector(api_key, args.config, args.channels).collect_all()
-        return 0
-
     else:
         parser.print_help()
-        return 0
+
+    return 0
 
 
 if __name__ == "__main__":
