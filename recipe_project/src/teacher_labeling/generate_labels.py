@@ -1,88 +1,61 @@
 """
-Teacher Labeling — Gemini + Groq Ensemble
-==========================================
+Teacher Labeling Module
+=======================
 Group 11: Daniel Simanovsky & Roei Ben Artzi
 NLP 2025a - Recipe Modification Extraction
 
-Sends each comment to TWO models simultaneously:
-  - Gemini 3.1 Flash Lite  (50 comments per batch, 500 RPD)
-  - Groq Llama 3.3 70B     (25 comments per batch, 1000 RPD)
-
-Agreement    → HIGH CONFIDENCE label → teacher_output.jsonl
-Disagreement → flagged for review   → needs_review.jsonl
-
-Resume-safe: re-running skips already-processed comments.
+Uses Gemini 1.5 Pro (or GPT-4o) to generate silver labels for training data.
+This implements the "Teacher" in our Teacher-Student distillation approach.
 
 Usage:
-    python generate_labels.py \
-        --input  youtube_collector/data/raw_youtube/comments.jsonl \
-        --output data/silver_labels/teacher_output.jsonl \
-        --review data/silver_labels/needs_review.jsonl \
-        --limit  50
+    # Using Gemini (recommended - free tier available)
+    python -m src.teacher_labeling.generate_labels \\
+        --input  data/raw_youtube/comments.jsonl \\
+        --provider gemini \\
+        --api-key YOUR_GOOGLE_API_KEY
 
-Dependencies:
-    pipenv install google-genai groq tqdm python-dotenv
+    # Using GPT-4o (backup)
+    python -m src.teacher_labeling.generate_labels \\
+        --input  data/raw_youtube/comments.jsonl \\
+        --provider openai \\
+        --api-key YOUR_OPENAI_API_KEY
 
-.env file:
-    GOOGLE_API_KEY=...
-    GROQ_API_KEY=...
+    # Resume interrupted run (skips already-labeled comments)
+    python -m src.teacher_labeling.generate_labels \\
+        --input  data/raw_youtube/comments.jsonl \\
+        --provider gemini
+
+    # Process a limited batch (for testing)
+    python -m src.teacher_labeling.generate_labels \\
+        --input  data/raw_youtube/comments.jsonl \\
+        --limit  100
 """
 
-import os
-import sys
 import json
+import os
 import time
-import logging
-import argparse
 import re
+import logging
 from pathlib import Path
+from typing import Dict, List, Optional, Any
+from dataclasses import dataclass, asdict, field
 from datetime import datetime
-from dataclasses import dataclass, field, asdict
-from typing import Optional
+from tqdm import tqdm
 
-# ---------------------------------------------------------------------------
-# Dependencies
-# ---------------------------------------------------------------------------
+# Try to import Google AI
 try:
-    from google import genai as google_genai
-    from google.genai import types as genai_types
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
 except ImportError:
-    print("❌ Missing: pipenv install google-genai")
-    sys.exit(1)
+    GEMINI_AVAILABLE = False
+    print("⚠️  google-generativeai not installed. Run: pip install google-generativeai")
 
+# Try to import OpenAI
 try:
-    from groq import Groq
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
 except ImportError:
-    print("❌ Missing: pipenv install groq")
-    sys.exit(1)
-
-try:
-    from tqdm import tqdm
-except ImportError:
-    print("❌ Missing: pipenv install tqdm")
-    sys.exit(1)
-
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
-
-
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-
-GEMINI_MODEL      = "gemini-2.5-flash-lite"    # FIX 1: correct model string
-GROQ_MODEL        = "llama-3.3-70b-versatile"  # 1,000 RPD free tier
-
-GEMINI_BATCH_SIZE = 50   # comments per Gemini request
-GROQ_BATCH_SIZE   = 25   # comments per Groq request
-
-GEMINI_DELAY      = 4.0  # seconds between Gemini calls (15 RPM limit)
-GROQ_DELAY        = 2.5  # seconds between Groq calls   (30 RPM limit)
-
-VALID_ASPECTS = {"SUBSTITUTION", "QUANTITY", "TECHNIQUE", "ADDITION"}
+    OPENAI_AVAILABLE = False
 
 
 # =============================================================================
@@ -91,471 +64,665 @@ VALID_ASPECTS = {"SUBSTITUTION", "QUANTITY", "TECHNIQUE", "ADDITION"}
 
 @dataclass
 class Modification:
-    span:       str
-    aspect:     str
-    start_char: Optional[int] = None
-    end_char:   Optional[int] = None
+    """A single extracted recipe modification span."""
+    span: str                        # EXACT text span from the comment (Hebrew preserved)
+    aspect: str                      # SUBSTITUTION | QUANTITY | TECHNIQUE | ADDITION
+    sentiment: str = "constructive"  # constructive (suggestion) | positive (praise)
+    start_char: Optional[int] = None # Character-level start index in original comment
+    end_char: Optional[int] = None   # Character-level end index in original comment
 
 
 @dataclass
-class ModelLabel:
-    has_modification: bool  = False
-    modifications:    list  = field(default_factory=list)
-    confidence:       float = 0.0
-    error:            Optional[str] = None
+class TeacherOutput:
+    """Output from the Teacher model for a single comment."""
+    modifications: List[Modification] = field(default_factory=list)
+    has_modification: bool = False
+    overall_sentiment: str = "neutral"
+    raw_response: Optional[str] = None
+    error: Optional[str] = None      # Set if the API call or JSON parse failed
 
 
 @dataclass
 class LabeledComment:
+    """
+    A comment paired with its silver labels from the Teacher.
+
+    NOTE: This dataclass is used for type documentation purposes.
+          The actual JSONL output in process_file uses a plain dict
+          for flexibility (to avoid breaking changes as fields evolve).
+    """
+    # ── Original comment fields ───────────────────────────────────────────────
     comment_id:    str
     video_id:      str
     text:          str
     like_count:    int
     video_title:   str
     channel_title: str
+    channel_id:    str = ""   # YouTube channel ID (forms channel URL)
 
-    gemini_label:  Optional[ModelLabel] = None
-    groq_label:    Optional[ModelLabel] = None
+    # ── Teacher labels ────────────────────────────────────────────────────────
+    teacher_output: Optional[TeacherOutput] = None
 
-    agreement:     Optional[bool]       = None
-    final_label:   Optional[ModelLabel] = None
-    review_needed: bool                 = False
-    labeled_at:    str                  = ""
+    # ── Provenance ────────────────────────────────────────────────────────────
+    labeled_at:    str = ""
+    teacher_model: str = ""
 
 
 # =============================================================================
 # PROMPTS
 # =============================================================================
 
-SYSTEM_PROMPT = """You are an expert NLP data annotator specializing in Hebrew culinary text.
-Your ONLY task is STRICT EXTRACTIVE ANNOTATION. You will analyze YouTube comments and extract recipe modifications.
+SYSTEM_PROMPT = """You are an expert culinary NLP assistant specializing in Hebrew text analysis.
+Your task is to analyze user comments from cooking videos and extract recipe modifications.
 
-A "recipe modification" is when a commenter:
-- Changes an ingredient quantity (QUANTITY)
-- Substitutes one ingredient for another (SUBSTITUTION)
-- Changes cooking method, time, temperature, or equipment (TECHNIQUE)
-- Adds an ingredient not in the original recipe (ADDITION)
+For each comment, identify ALL modification suggestions and extract:
+1. The EXACT text span containing the modification (preserve original Hebrew text exactly)
+2. The aspect category: SUBSTITUTION, QUANTITY, TECHNIQUE, or ADDITION
+3. Whether it's constructive (suggestion/correction) or positive (praise)
 
-CRITICAL RULES FOR SPAN EXTRACTION:
-1. COPY-PASTE ONLY: The `span` MUST be a perfect, exact substring copied character-by-character from the original comment.
-2. DO NOT FIX TYPOS: If the user wrote with spelling mistakes (e.g., "בתאם" instead of "בטעם"), you MUST extract the mistake exactly as written.
-3. NO PARAPHRASING: Do not summarize the modification. Do not translate slang to formal Hebrew.
-4. MULTI-SPAN: If a modification is interrupted by other words, extract EACH part as a separate object. Do not extract long noisy sentences.
-5. CONFIDENCE: Rate your certainty 0.0-1.0 that you identified modifications correctly.
+ASPECT DEFINITIONS:
+- SUBSTITUTION: Replacing one ingredient with another (e.g., "במקום חמאה השתמשתי בשמן")
+- QUANTITY:     Modifying amounts (e.g., "הוספתי יותר סוכר", "כפול שום")
+- TECHNIQUE:    Changing cooking method, time, or temperature (e.g., "אפיתי 10 דקות יותר")
+- ADDITION:     Adding ingredients not in original recipe (e.g., "הוספתי גם קינמון")
 
-If the span you return cannot be found using a simple text.find(span) string match in Python, YOU HAVE FAILED.
+CRITICAL RULES:
+1. A comment may contain MULTIPLE modifications - extract ALL of them
+2. Extract the MINIMAL text span that captures the modification
+3. If spans are non-contiguous, list each separately
+4. Return empty modifications list [] if no modifications found
+5. Preserve Hebrew text EXACTLY as written (including typos)
+6. Do NOT include general praise like "מעולה" unless it's about a modification
 
-Return ONLY valid JSON. No markdown, no explanations, no backticks."""
-
-
-def build_batch_prompt(comments: list) -> str:
-    lines = [
-        "Analyze each comment below and return a JSON array.",
-        "",
-        "Return exactly this structure — one object per comment:",
-        "",
-        "[",
-        "  {",
-        '    "index": 0,',
-        '    "has_modification": true,',
-        '    "confidence": 0.92,',
-        '    "modifications": [',
-        "      {",
-        '        "span": "exact Hebrew text copied from comment",',
-        '        "aspect": "QUANTITY"',
-        "      }",
-        "    ]",
-        "  }",
-        "]",
-        "",
-        "RULES:",
-        "- Return a JSON array with EXACTLY the same number of objects as input comments",
-        "- aspect must be one of: SUBSTITUTION, QUANTITY, TECHNIQUE, ADDITION",
-        "- span must be copied EXACTLY from the comment — character-by-character, including typos",
-        "- If no modification: has_modification=false, modifications=[]",
-        "- Return ONLY the JSON array. No markdown. No explanation. No backticks.",
-        "",
-        "Comments to analyze:",
-    ]
-    for i, c in enumerate(comments):
-        lines.append(f"[{i}] {c['text']}")
-    return "\n".join(lines)
+OUTPUT FORMAT (respond ONLY with valid JSON, no markdown):
+{
+  "modifications": [
+    {
+      "span": "<exact text from comment>",
+      "aspect": "SUBSTITUTION|QUANTITY|TECHNIQUE|ADDITION",
+      "sentiment": "constructive|positive"
+    }
+  ],
+  "has_modification": true|false,
+  "overall_sentiment": "constructive|positive|neutral"
+}"""
 
 
-# =============================================================================
-# JSON PARSING + HALLUCINATION SAFETY NET
-# =============================================================================
+FEW_SHOT_EXAMPLES = """
+EXAMPLE 1:
+Comment: "עשיתי את העוגה והיא יצאה מדהימה! רק הוספתי עוד כפית סוכר כי אני אוהבת מתוק"
 
-def extract_json(raw: str) -> list:
-    """Robustly extract a JSON array from model output."""
-    raw = re.sub(r"```(?:json)?", "", raw).strip()
-    raw = raw.strip("`").strip()
+Output:
+{
+  "modifications": [
+    {
+      "span": "הוספתי עוד כפית סוכר",
+      "aspect": "QUANTITY",
+      "sentiment": "constructive"
+    }
+  ],
+  "has_modification": true,
+  "overall_sentiment": "constructive"
+}
 
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        pass
+EXAMPLE 2:
+Comment: "במקום חמאה השתמשתי בשמן קוקוס והוספתי גם קינמון - יצא מושלם!"
 
-    match = re.search(r"\[.*\]", raw, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group())
-        except json.JSONDecodeError:
-            pass
+Output:
+{
+  "modifications": [
+    {
+      "span": "במקום חמאה השתמשתי בשמן קוקוס",
+      "aspect": "SUBSTITUTION",
+      "sentiment": "constructive"
+    },
+    {
+      "span": "הוספתי גם קינמון",
+      "aspect": "ADDITION",
+      "sentiment": "constructive"
+    }
+  ],
+  "has_modification": true,
+  "overall_sentiment": "constructive"
+}
 
-    return []
+EXAMPLE 3:
+Comment: "אפיתי 35 דקות במקום 25 כי התנור שלי חלש יותר"
 
+Output:
+{
+  "modifications": [
+    {
+      "span": "אפיתי 35 דקות במקום 25",
+      "aspect": "TECHNIQUE",
+      "sentiment": "constructive"
+    }
+  ],
+  "has_modification": true,
+  "overall_sentiment": "constructive"
+}
 
-def parse_batch_response(raw: str, comments: list, model_name: str) -> list:
-    """Parse model batch response into ModelLabel list with hallucination safety net."""
-    results = [ModelLabel(error="not processed") for _ in comments]
-    parsed  = extract_json(raw)
+EXAMPLE 4:
+Comment: "וואו מתכון מדהים! תודה רבה!"
 
-    if not parsed:
-        logging.warning(f"[{model_name}] Failed to parse JSON response")
-        return results
+Output:
+{
+  "modifications": [],
+  "has_modification": false,
+  "overall_sentiment": "positive"
+}
 
-    if len(parsed) != len(comments):
-        logging.warning(
-            f"[{model_name}] Expected {len(comments)} results, got {len(parsed)}"
-        )
+EXAMPLE 5:
+Comment: "עשיתי עם פחות מלח, החלפתי את הכוסברה בפטרוזיליה ואפיתי בתנור במקום על הכיריים"
 
-    for item in parsed:
-        idx = item.get("index", -1)
-        if not isinstance(idx, int) or idx < 0 or idx >= len(comments):
-            continue
-
-        mods = []
-        for m in item.get("modifications", []):
-            span   = m.get("span", "").strip()
-            aspect = m.get("aspect", "").upper()
-
-            if not span or aspect not in VALID_ASPECTS:
-                continue
-
-            original = comments[idx]["text"]
-            start    = original.find(span)
-
-            # HALLUCINATION SAFETY NET: reject spans not in original text
-            if start == -1:
-                logging.warning(
-                    f"[{model_name}] HALLUCINATION: span '{span[:50]}' "
-                    f"not found in '{original[:60]}'. Dropping."
-                )
-                continue
-
-            mods.append(Modification(
-                span=span,
-                aspect=aspect,
-                start_char=start,
-                end_char=start + len(span),
-            ))
-
-        results[idx] = ModelLabel(
-            has_modification=bool(item.get("has_modification", len(mods) > 0)),
-            modifications=mods,
-            confidence=float(item.get("confidence", 0.5)),
-        )
-
-    return results
+Output:
+{
+  "modifications": [
+    {
+      "span": "עם פחות מלח",
+      "aspect": "QUANTITY",
+      "sentiment": "constructive"
+    },
+    {
+      "span": "החלפתי את הכוסברה בפטרוזיליה",
+      "aspect": "SUBSTITUTION",
+      "sentiment": "constructive"
+    },
+    {
+      "span": "אפיתי בתנור במקום על הכיריים",
+      "aspect": "TECHNIQUE",
+      "sentiment": "constructive"
+    }
+  ],
+  "has_modification": true,
+  "overall_sentiment": "constructive"
+}
+"""
 
 
 # =============================================================================
-# GEMINI CLIENT — FIX 3: proper SDK usage with config object
+# TEACHER MODEL: GEMINI
 # =============================================================================
 
-class GeminiLabeler:
-    def __init__(self, api_key: str):
-        self.client    = google_genai.Client(api_key=api_key)
-        self.last_call = 0.0
+class GeminiTeacher:
+    """Teacher model using Google's Gemini 1.5 Pro."""
 
-    def label_batch(self, comments: list) -> list:
-        elapsed = time.time() - self.last_call
-        if elapsed < GEMINI_DELAY:
-            time.sleep(GEMINI_DELAY - elapsed)
-
-        try:
-            response = self.client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=build_batch_prompt(comments),
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    temperature=0.1,   # FIX 3: low temp for JSON stability
-                ),
+    def __init__(self, api_key: str, model_name: str = "gemini-1.5-pro"):
+        if not GEMINI_AVAILABLE:
+            raise ImportError(
+                "google-generativeai not installed. Run: pip install google-generativeai"
             )
-            self.last_call = time.time()
-            return parse_batch_response(response.text, comments, "Gemini")
+        genai.configure(api_key=api_key)
+        self.model      = genai.GenerativeModel(model_name)
+        self.model_name = model_name
+        self.generation_config = genai.types.GenerationConfig(
+            temperature=0.0,
+            max_output_tokens=1024,
+        )
+
+    def generate(self, comment_text: str) -> TeacherOutput:
+        """Call Gemini and parse its JSON response."""
+        prompt = (
+            f"{SYSTEM_PROMPT}\n\n"
+            f"{FEW_SHOT_EXAMPLES}\n\n"
+            f"Now analyze this comment:\n"
+            f'Comment: "{comment_text}"\n\n'
+            f"Output (JSON only, no markdown):"
+        )
+        try:
+            response = self.model.generate_content(
+                prompt,
+                generation_config=self.generation_config,
+            )
+            return self._parse_response(response.text, comment_text)
         except Exception as e:
-            logging.error(f"[Gemini] API error: {e}")
-            self.last_call = time.time()
-            return [ModelLabel(error=str(e)) for _ in comments]
+            return TeacherOutput(error=str(e))
+
+    def _parse_response(self, response: str, original_text: str) -> TeacherOutput:
+        """Clean markdown fences, parse JSON, resolve character offsets."""
+        try:
+            cleaned = response.strip()
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r'^```json?\n?', '', cleaned)
+                cleaned = re.sub(r'\n?```$',      '', cleaned)
+
+            data          = json.loads(cleaned)
+            modifications = []
+
+            for mod in data.get("modifications", []):
+                span = mod.get("span", "")
+                start_char = original_text.find(span) if span else -1
+                end_char   = (
+                    start_char + len(span)
+                    if start_char >= 0 else None
+                )
+
+                modifications.append(Modification(
+                    span=span,
+                    aspect=mod.get("aspect", "UNKNOWN"),
+                    sentiment=mod.get("sentiment", "constructive"),
+                    start_char=start_char if start_char >= 0 else None,
+                    end_char=end_char,
+                ))
+
+            return TeacherOutput(
+                modifications=modifications,
+                has_modification=data.get(
+                    "has_modification", len(modifications) > 0
+                ),
+                overall_sentiment=data.get("overall_sentiment", "neutral"),
+                raw_response=response,
+            )
+
+        except json.JSONDecodeError as e:
+            return TeacherOutput(
+                error=f"JSON parse error: {e}",
+                raw_response=response,
+            )
 
 
 # =============================================================================
-# GROQ CLIENT — FIX 4: bumped max_tokens to 8192
+# TEACHER MODEL: OPENAI
 # =============================================================================
 
-class GroqLabeler:
-    def __init__(self, api_key: str):
-        self.client    = Groq(api_key=api_key)
-        self.last_call = 0.0
+class OpenAITeacher:
+    """Teacher model using OpenAI's GPT-4o."""
 
-    def label_batch(self, comments: list) -> list:
-        elapsed = time.time() - self.last_call
-        if elapsed < GROQ_DELAY:
-            time.sleep(GROQ_DELAY - elapsed)
+    def __init__(self, api_key: str, model_name: str = "gpt-4o"):
+        if not OPENAI_AVAILABLE:
+            raise ImportError("openai not installed. Run: pip install openai")
+        self.client     = OpenAI(api_key=api_key)
+        self.model_name = model_name
 
+    def generate(self, comment_text: str) -> TeacherOutput:
+        """Call GPT-4o and parse its JSON response."""
         try:
             response = self.client.chat.completions.create(
-                model=GROQ_MODEL,
+                model=self.model_name,
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user",   "content": build_batch_prompt(comments)},
+                    {
+                        "role":    "system",
+                        "content": SYSTEM_PROMPT + "\n\n" + FEW_SHOT_EXAMPLES,
+                    },
+                    {
+                        "role":    "user",
+                        "content": (
+                            f'Analyze this comment:\n'
+                            f'Comment: "{comment_text}"\n\n'
+                            f"Output (JSON only):"
+                        ),
+                    },
                 ],
-                temperature=0.1,
-                max_tokens=8192,   # FIX 4: bumped up to avoid cut-off JSON
+                temperature=0.0,
+                max_tokens=1024,
+                response_format={"type": "json_object"},
             )
-            self.last_call = time.time()
-            raw = response.choices[0].message.content
-            return parse_batch_response(raw, comments, "Groq")
+            raw_response = response.choices[0].message.content
+            return self._parse_response(raw_response, comment_text)
         except Exception as e:
-            logging.error(f"[Groq] API error: {e}")
-            self.last_call = time.time()
-            return [ModelLabel(error=str(e)) for _ in comments]
+            return TeacherOutput(error=str(e))
+
+    def _parse_response(self, response: str, original_text: str) -> TeacherOutput:
+        """Parse JSON response from GPT-4o and resolve character offsets."""
+        try:
+            data          = json.loads(response)
+            modifications = []
+
+            for mod in data.get("modifications", []):
+                span       = mod.get("span", "")
+                start_char = original_text.find(span) if span else -1
+                end_char   = (
+                    start_char + len(span)
+                    if start_char >= 0 else None
+                )
+
+                modifications.append(Modification(
+                    span=span,
+                    aspect=mod.get("aspect", "UNKNOWN"),
+                    sentiment=mod.get("sentiment", "constructive"),
+                    start_char=start_char if start_char >= 0 else None,
+                    end_char=end_char,
+                ))
+
+            return TeacherOutput(
+                modifications=modifications,
+                has_modification=data.get(
+                    "has_modification", len(modifications) > 0
+                ),
+                overall_sentiment=data.get("overall_sentiment", "neutral"),
+                raw_response=response,
+            )
+
+        except json.JSONDecodeError as e:
+            return TeacherOutput(
+                error=f"JSON parse error: {e}",
+                raw_response=response,
+            )
 
 
 # =============================================================================
-# ENSEMBLE LOGIC — FIX 2: exact span overlap check
+# MAIN LABELING PIPELINE
 # =============================================================================
 
-def labels_agree(gemini: ModelLabel, groq: ModelLabel) -> bool:
+class SilverLabelGenerator:
     """
-    Two labels agree if:
-    1. Both agree on has_modification
-    2. If both say true → at least one span pair shares the same aspect
-       AND the spans actually overlap (one contains the other)
+    Main pipeline: reads comments.jsonl → calls Teacher API → writes teacher_output.jsonl.
+
+    Features:
+      - Safe resume: skip comments already labeled in previous runs
+      - Exponential-backoff retry per comment
+      - Incremental file writes (flush after each comment)
+      - Full field passthrough so downstream steps see all original fields
+
+    Usage:
+        generator = SilverLabelGenerator(api_key="...", provider="gemini")
+        generator.process_file("data/raw_youtube/comments.jsonl")
     """
-    if gemini.error or groq.error:
-        return False
 
-    # Both say no modification
-    if not gemini.has_modification and not groq.has_modification:
-        return True
-
-    # One says yes, one says no
-    if gemini.has_modification != groq.has_modification:
-        return False
-
-    # FIX 2: EXACT SPAN OVERLAP CHECK — aspect match + span containment
-    for g_mod in gemini.modifications:
-        for gr_mod in groq.modifications:
-            if g_mod.aspect == gr_mod.aspect:
-                # Check if spans overlap (one contains the other)
-                if g_mod.span in gr_mod.span or gr_mod.span in g_mod.span:
-                    return True
-
-    return False
-
-
-def merge_labels(gemini: ModelLabel, groq: ModelLabel) -> ModelLabel:
-    """
-    Merge two agreeing labels:
-    - Use Gemini spans (better Hebrew handling)
-    - Keep only modifications confirmed by span overlap with Groq
-    - Average confidence scores
-    """
-    if not gemini.has_modification:
-        return ModelLabel(has_modification=False, confidence=1.0)
-
-    # Keep only Gemini mods that have a matching overlapping span in Groq
-    groq_confirmed = set()
-    for gr_mod in groq.modifications:
-        groq_confirmed.add(gr_mod.aspect)
-
-    kept_mods = [
-        m for m in gemini.modifications
-        if m.aspect in groq_confirmed
-    ]
-
-    if not kept_mods:
-        kept_mods = gemini.modifications  # fallback: keep all Gemini mods
-
-    return ModelLabel(
-        has_modification=True,
-        modifications=kept_mods,
-        confidence=(gemini.confidence + groq.confidence) / 2,
-    )
-
-
-# =============================================================================
-# MAIN PIPELINE
-# =============================================================================
-
-class EnsembleLabeler:
     def __init__(
         self,
-        gemini_key:  str,
-        groq_key:    str,
-        output_file: str = "data/silver_labels/teacher_output.jsonl",
-        review_file: str = "data/silver_labels/needs_review.jsonl",
+        api_key:              str,
+        provider:             str = "gemini",
+        model_name:           Optional[str] = None,
+        output_dir:           str = "data/silver_labels",
+        delay_between_calls:  float = 0.5,
+        max_retries:          int = 3,
     ):
-        self.gemini = GeminiLabeler(gemini_key)
-        self.groq   = GroqLabeler(groq_key)
-        self.output = Path(output_file)
-        self.review = Path(review_file)
-        self.output.parent.mkdir(parents=True, exist_ok=True)
-        self.done_ids = self._load_done_ids()
-        logging.info(f"Already processed: {len(self.done_ids)} comments (resume-safe)")
+        self.provider   = provider
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.delay       = delay_between_calls
+        self.max_retries = max_retries
 
-    def _load_done_ids(self) -> set:
-        done = set()
-        for fpath in [self.output, self.review]:
-            if fpath.exists():
-                with open(fpath, encoding="utf-8") as f:
-                    for line in f:
-                        try:
-                            done.add(json.loads(line)["comment_id"])
-                        except Exception:
-                            pass
-        return done
+        if provider == "gemini":
+            self.teacher = GeminiTeacher(api_key, model_name or "gemini-1.5-pro")
+        elif provider == "openai":
+            self.teacher = OpenAITeacher(api_key, model_name or "gpt-4o")
+        else:
+            raise ValueError(f"Unknown provider: '{provider}'. Use 'gemini' or 'openai'.")
 
-    def _save(self, labeled: LabeledComment):
-        fpath = self.review if labeled.review_needed else self.output
-        with open(fpath, "a", encoding="utf-8") as f:
-            f.write(json.dumps(asdict(labeled), ensure_ascii=False) + "\n")
+        self.model_name = self.teacher.model_name
 
-    def process_file(self, input_file: str, limit: int = None):
-        comments = []
-        with open(input_file, encoding="utf-8") as f:
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s | %(levelname)s | %(message)s',
+        )
+        self.logger = logging.getLogger(__name__)
+
+    # -------------------------------------------------------------------------
+
+    def process_file(
+        self,
+        input_file:     str,
+        output_file:    Optional[str] = None,
+        limit:          Optional[int] = None,
+        skip_existing:  bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Process a JSONL file of comments and write silver labels.
+
+        Args:
+            input_file:    Path to comments.jsonl (output of collect.py)
+            output_file:   Path to output JSONL (default: silver_labels/teacher_output.jsonl)
+            limit:         Cap on number of comments to process (None = all)
+            skip_existing: Skip comments whose comment_id is already in the output file
+                           (enables safe resume of interrupted runs)
+
+        Returns:
+            Statistics dictionary
+        """
+        input_path  = Path(input_file)
+        if not input_path.exists():
+            raise FileNotFoundError(f"Input file not found: {input_file}")
+
+        output_path = (
+            Path(output_file) if output_file
+            else self.output_dir / "teacher_output.jsonl"
+        )
+
+        # ── Resume: collect IDs already in output ─────────────────────────────
+        existing_ids: set = set()
+        if skip_existing and output_path.exists():
+            with open(output_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        data = json.loads(line)
+                        existing_ids.add(data.get("comment_id"))
+                    except Exception:
+                        pass
+            self.logger.info(
+                f"Resume mode: {len(existing_ids)} comments already labeled, skipping them."
+            )
+
+        # ── Load comments (excluding already-labeled ones) ────────────────────
+        comments: List[Dict] = []
+        with open(input_path, 'r', encoding='utf-8') as f:
             for line in f:
-                line = line.strip()
-                if line:
-                    comments.append(json.loads(line))
+                try:
+                    comment = json.loads(line)
+                    if comment.get("comment_id") not in existing_ids:
+                        comments.append(comment)
+                except json.JSONDecodeError:
+                    continue
 
         if limit:
             comments = comments[:limit]
-            logging.info(f"TEST MODE: processing first {limit} comments only")
 
-        todo = [c for c in comments if c["comment_id"] not in self.done_ids]
-        logging.info(
-            f"Total: {len(comments)} | Done: {len(self.done_ids)} | Remaining: {len(todo)}"
+        self.logger.info(
+            f"Processing {len(comments)} comments with {self.model_name} "
+            f"({len(existing_ids)} skipped as already labeled)"
         )
 
-        if not todo:
-            print("✅ All comments already processed!")
-            return
-
-        stats = {
-            "total":    len(todo),
-            "agreed":   0,
-            "disagreed": 0,
-            "errors":   0,
-            "with_mod": 0,
+        # ── Processing loop ───────────────────────────────────────────────────
+        stats: Dict[str, Any] = {
+            "total_processed": 0,
+            "successful":      0,
+            "errors":          0,
+            "with_modifications": 0,
+            "total_modifications": 0,
+            "aspect_counts": {
+                "SUBSTITUTION": 0,
+                "QUANTITY":     0,
+                "TECHNIQUE":    0,
+                "ADDITION":     0,
+            },
+            "started_at": datetime.now().isoformat(),
         }
 
-        gemini_batches = [todo[i:i+GEMINI_BATCH_SIZE] for i in range(0, len(todo), GEMINI_BATCH_SIZE)]
-        groq_batches   = [todo[i:i+GROQ_BATCH_SIZE]   for i in range(0, len(todo), GROQ_BATCH_SIZE)]
+        with open(output_path, 'a', encoding='utf-8') as f:
+            for comment in tqdm(comments, desc="Generating silver labels"):
+                result = self._process_comment(comment)
 
-        # Step 1: Groq labels everything first
-        groq_labels = {}
-        print(f"\n🤖 Step 1/2: Groq labeling ({len(groq_batches)} batches × {GROQ_BATCH_SIZE} comments)...")
-        for batch in tqdm(groq_batches, unit="batch"):
-            results = self.groq.label_batch(batch)
-            for comment, label in zip(batch, results):
-                groq_labels[comment["comment_id"]] = label
+                # ── Build output record ────────────────────────────────────────
+                # BUG FIX: channel_id was missing — it is now passed through so
+                #          downstream steps can group/filter by channel.
+                output_data = {
+                    "comment_id":    comment.get("comment_id"),
+                    "video_id":      comment.get("video_id"),
+                    "channel_id":    comment.get("channel_id", ""),   # ← BUG FIX
+                    "text":          comment.get("text"),
+                    "like_count":    comment.get("like_count", 0),
+                    "video_title":   comment.get("video_title", ""),
+                    "channel_title": comment.get("channel_title", ""),
+                    "teacher_output": self._serialize_teacher_output(result),
+                    "teacher_model": self.model_name,
+                    "labeled_at":    datetime.now().isoformat(),
+                }
 
-        # Step 2: Gemini labels + ensemble decision
-        print(f"\n🤖 Step 2/2: Gemini labeling + ensemble ({len(gemini_batches)} batches × {GEMINI_BATCH_SIZE} comments)...")
-        for batch in tqdm(gemini_batches, unit="batch"):
-            gemini_results = self.gemini.label_batch(batch)
+                f.write(json.dumps(output_data, ensure_ascii=False) + "\n")
+                f.flush()   # Incremental writes — safe against crashes
 
-            for comment, g_label in zip(batch, gemini_results):
-                gr_label = groq_labels.get(
-                    comment["comment_id"], ModelLabel(error="not processed")
-                )
+                # ── Update stats ───────────────────────────────────────────────
+                stats["total_processed"] += 1
 
-                agree  = labels_agree(g_label, gr_label)
-                final  = merge_labels(g_label, gr_label) if agree else g_label
-                review = not agree
-
-                if g_label.error or gr_label.error:
+                if result.error:
                     stats["errors"] += 1
-                    review = True
-                elif agree:
-                    stats["agreed"] += 1
                 else:
-                    stats["disagreed"] += 1
+                    stats["successful"] += 1
+                    if result.has_modification:
+                        stats["with_modifications"] += 1
+                        stats["total_modifications"] += len(result.modifications)
+                        for mod in result.modifications:
+                            if mod.aspect in stats["aspect_counts"]:
+                                stats["aspect_counts"][mod.aspect] += 1
 
-                if final.has_modification:
-                    stats["with_mod"] += 1
+                time.sleep(self.delay)
 
-                self._save(LabeledComment(
-                    comment_id=comment["comment_id"],
-                    video_id=comment["video_id"],
-                    text=comment["text"],
-                    like_count=comment.get("like_count", 0),
-                    video_title=comment.get("video_title", ""),
-                    channel_title=comment.get("channel_title", ""),
-                    gemini_label=g_label,
-                    groq_label=gr_label,
-                    agreement=agree,
-                    final_label=final,
-                    review_needed=review,
-                    labeled_at=datetime.now().isoformat(),
-                ))
+        stats["ended_at"] = datetime.now().isoformat()
 
-        print("\n" + "=" * 55)
-        print("  ENSEMBLE LABELING SUMMARY")
-        print("=" * 55)
-        print(f"  Total processed:    {stats['total']:,}")
-        print(f"  Models agreed:      {stats['agreed']:,}  ({100*stats['agreed']/max(stats['total'],1):.1f}%)")
-        print(f"  Models disagreed:   {stats['disagreed']:,}  ({100*stats['disagreed']/max(stats['total'],1):.1f}%)  → review file")
-        print(f"  Errors:             {stats['errors']:,}")
-        print(f"  With modifications: {stats['with_mod']:,}  ({100*stats['with_mod']/max(stats['total'],1):.1f}%)")
-        print(f"\n  ✅ High-confidence → {self.output}")
-        print(f"  ⚠️  Needs review    → {self.review}")
-        print("=" * 55)
+        # ── Persist stats ─────────────────────────────────────────────────────
+        stats_path = self.output_dir / "generation_stats.json"
+        with open(stats_path, 'w', encoding='utf-8') as f:
+            json.dump(stats, f, indent=2, ensure_ascii=False)
+
+        self._print_summary(stats)
+        return stats
+
+    # -------------------------------------------------------------------------
+
+    def _process_comment(self, comment: Dict) -> TeacherOutput:
+        """
+        Call the Teacher model on one comment with exponential-backoff retry.
+        Returns the best TeacherOutput (or one with error set if all retries fail).
+        """
+        text = comment.get("text", "")
+
+        last_result = TeacherOutput(error="No attempts made")
+        for attempt in range(self.max_retries):
+            result = self.teacher.generate(text)
+            if not result.error:
+                return result
+            last_result = result
+            if attempt < self.max_retries - 1:
+                time.sleep(2 ** attempt)   # Exponential backoff: 1s, 2s, 4s
+
+        return last_result
+
+    def _serialize_teacher_output(self, output: TeacherOutput) -> Dict:
+        """Convert TeacherOutput to a plain dict for JSON serialization."""
+        return {
+            "modifications": [
+                {
+                    "span":       m.span,
+                    "aspect":     m.aspect,
+                    "sentiment":  m.sentiment,
+                    "start_char": m.start_char,
+                    "end_char":   m.end_char,
+                }
+                for m in output.modifications
+            ],
+            "has_modification":   output.has_modification,
+            "overall_sentiment":  output.overall_sentiment,
+            "error":              output.error,
+        }
+
+    def _print_summary(self, stats: Dict) -> None:
+        """Print a human-readable generation summary."""
+        print("\n" + "=" * 60)
+        print("SILVER LABEL GENERATION SUMMARY")
+        print("=" * 60)
+        print(f"  Total processed    : {stats['total_processed']}")
+        print(f"  Successful         : {stats['successful']}")
+        print(f"  Errors             : {stats['errors']}")
+        print(f"  With modifications : {stats['with_modifications']}")
+        print(f"  Total modifications: {stats['total_modifications']}")
+        print("\n  Aspect breakdown:")
+        for aspect, count in stats['aspect_counts'].items():
+            pct = (
+                100 * count / stats['total_modifications']
+                if stats['total_modifications'] > 0 else 0
+            )
+            print(f"    {aspect:<14}: {count:>5}  ({pct:.1f}%)")
+
+        if stats['total_processed'] > 0:
+            mod_rate = 100 * stats['with_modifications'] / stats['total_processed']
+            err_rate = 100 * stats['errors']            / stats['total_processed']
+            print(f"\n  Modification rate  : {mod_rate:.1f}%")
+            print(f"  Error rate         : {err_rate:.1f}%")
+
+        print("=" * 60)
 
 
 # =============================================================================
 # CLI
 # =============================================================================
 
-def main():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(message)s",
-    )
+def main() -> int:
+    import argparse
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
 
     parser = argparse.ArgumentParser(
-        description="Ensemble Teacher Labeling (Gemini + Groq)"
+        description="Generate silver labels using Teacher model (Gemini or GPT-4o)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python -m src.teacher_labeling.generate_labels \\
+      --input data/raw_youtube/comments.jsonl --provider gemini
+
+  # Resume interrupted run (default: skips already-labeled comments)
+  python -m src.teacher_labeling.generate_labels \\
+      --input data/raw_youtube/comments.jsonl --provider gemini
+
+  # Test with first 50 comments
+  python -m src.teacher_labeling.generate_labels \\
+      --input data/raw_youtube/comments.jsonl --limit 50
+        """,
     )
-    parser.add_argument("--input",      required=True,  help="Path to comments.jsonl")
-    parser.add_argument("--output",     default="data/silver_labels/teacher_output.jsonl")
-    parser.add_argument("--review",     default="data/silver_labels/needs_review.jsonl")
-    parser.add_argument("--gemini-key", help="Gemini API key (or GOOGLE_API_KEY in .env)")
-    parser.add_argument("--groq-key",   help="Groq API key   (or GROQ_API_KEY in .env)")
-    parser.add_argument("--limit",      type=int, default=None,
-                        help="Process only first N comments (for testing)")
+    parser.add_argument("--input",    "-i", required=True,
+                        help="Input comments.jsonl (from collect.py)")
+    parser.add_argument("--output",   "-o",
+                        help="Output path (default: data/silver_labels/teacher_output.jsonl)")
+    parser.add_argument("--provider", choices=["gemini", "openai"], default="gemini",
+                        help="Teacher model provider")
+    parser.add_argument("--api-key",  help="API key (or set env var GOOGLE_API_KEY / OPENAI_API_KEY)")
+    parser.add_argument("--model",    help="Model name override (default: gemini-1.5-pro / gpt-4o)")
+    parser.add_argument("--limit",    type=int,
+                        help="Max number of comments to process (default: all)")
+    parser.add_argument("--delay",    type=float, default=0.5,
+                        help="Seconds between API calls (default: 0.5)")
+    parser.add_argument("--retries",  type=int, default=3,
+                        help="Max retries per comment (default: 3)")
+    parser.add_argument("--no-skip",  action="store_true",
+                        help="Reprocess all comments (don't skip existing labels)")
+    parser.add_argument("--output-dir", default="data/silver_labels",
+                        help="Output directory (default: data/silver_labels)")
+
     args = parser.parse_args()
 
-    gemini_key = args.gemini_key or os.environ.get("GOOGLE_API_KEY")
-    groq_key   = args.groq_key   or os.environ.get("GROQ_API_KEY")
+    # Resolve API key
+    api_key = args.api_key
+    if not api_key:
+        env_key = "GOOGLE_API_KEY" if args.provider == "gemini" else "OPENAI_API_KEY"
+        api_key = os.environ.get(env_key)
 
-    if not gemini_key:
-        print("❌ No Gemini key! Set GOOGLE_API_KEY in .env or use --gemini-key")
-        sys.exit(1)
-    if not groq_key:
-        print("❌ No Groq key! Set GROQ_API_KEY in .env or use --groq-key")
-        sys.exit(1)
+    if not api_key:
+        env_var = "GOOGLE_API_KEY" if args.provider == "gemini" else "OPENAI_API_KEY"
+        print(f"❌ No API key provided!")
+        print(f"   Set {env_var} environment variable, or use --api-key")
+        return 1
 
-    EnsembleLabeler(
-        gemini_key=gemini_key,
-        groq_key=groq_key,
+    generator = SilverLabelGenerator(
+        api_key=api_key,
+        provider=args.provider,
+        model_name=args.model,
+        output_dir=args.output_dir,
+        delay_between_calls=args.delay,
+        max_retries=args.retries,
+    )
+
+    generator.process_file(
+        input_file=args.input,
         output_file=args.output,
-        review_file=args.review,
-    ).process_file(args.input, limit=args.limit)
+        limit=args.limit,
+        skip_existing=not args.no_skip,
+    )
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    exit(main())
