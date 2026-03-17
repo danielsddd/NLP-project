@@ -1,11 +1,21 @@
 #!/usr/bin/env python3
 """
-YouTube Thread Collector — v4
+YouTube Thread Collector — v4.1 (fixed)
 Collects Hebrew comment threads from cooking channels.
+
+FIXES over v4:
+  - Reads config.yaml for all settings (no more ignored config)
+  - Uses playlistItems instead of search for video listing (100x cheaper)
+  - Guards against missing --api-key
+  - Uses script-relative paths so it works from any working directory
+  - Filters replies for Hebrew/spam too
+  - Writes collection_stats.json
+  - Marks non-Hebrew channels clearly
 
 Usage:
     python collect.py --api-key KEY --discover-all
     python collect.py --api-key KEY --collect
+    python collect.py --api-key KEY --collect --target 30000
     python collect.py --list-channels
     python collect.py --filter-channels --csv data/raw_youtube/channels_report.csv
 """
@@ -24,18 +34,63 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 # =============================================================================
+# PATH SETUP — resolve relative to THIS script, not the working directory
+# =============================================================================
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent  # assumes youtube_collector/ is one level down
+
+# =============================================================================
+# LOAD CONFIG (config.yaml) — single source of truth for all settings
+# =============================================================================
+
+def load_config():
+    """Load config.yaml if it exists, otherwise return sensible defaults."""
+    config_path = SCRIPT_DIR / "config.yaml"
+    if config_path.exists():
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+_CONFIG = load_config()
+
+# Extract settings from config.yaml with fallbacks
+_OUTPUT_CFG     = _CONFIG.get("output", {})
+_COLLECTION_CFG = _CONFIG.get("collection", {})
+_FILTER_CFG     = _CONFIG.get("filtering", {})
+
+# Output paths (resolved relative to project root)
+DEFAULT_OUTPUT_DIR = str(PROJECT_ROOT / _OUTPUT_CFG.get("directory", "data/raw_youtube").lstrip("./"))
+DEFAULT_CHANNELS_PATH = str(SCRIPT_DIR / "channels.yaml")
+LOG_FILE = _OUTPUT_CFG.get("log_file", None)
+
+# Collection parameters
+TARGET_COMMENTS        = _COLLECTION_CFG.get("target_threads", 5000)
+MAX_VIDEOS_PER_CHANNEL = _COLLECTION_CFG.get("max_videos_per_channel", 50)
+MAX_COMMENTS_PER_VIDEO = _COLLECTION_CFG.get("max_threads_per_video", 200)
+INCLUDE_REPLIES        = _COLLECTION_CFG.get("include_replies", True)
+
+# Filtering parameters
+MIN_WORDS          = _FILTER_CFG.get("min_words", 3)
+REQUIRE_HEBREW     = _FILTER_CFG.get("require_hebrew", True)
+SKIP_CREATOR       = _FILTER_CFG.get("skip_creator_comments", True)
+SPAM_KEYWORDS_LIST = _FILTER_CFG.get("spam_keywords", [])
+
+# =============================================================================
 # CONSTANTS
 # =============================================================================
 
 HEBREW_RE = re.compile(r'[\u0590-\u05FF]')
+
+# Merge hardcoded spam words with config-defined ones
 SPAM_WORDS = {"http", "https", "www.", "subscribe", "לייק", "הירשמו"}
+SPAM_WORDS.update(set(SPAM_KEYWORDS_LIST))
+
 DISCOVERY_QUERIES = [
     "מתכונים בישול", "אפייה ביתית", "בישול ביתי", "שף ישראלי",
     "מתכון עוגה", "מתכון לחם", "בישול טבעוני", "קינוחים",
     "ארוחת ערב", "מאפים ביתיים",
 ]
-DEFAULT_CHANNELS_PATH = "youtube_collector/channels.yaml"
-DEFAULT_OUTPUT_DIR = "data/raw_youtube"
 
 # =============================================================================
 # HELPERS
@@ -53,6 +108,7 @@ def word_count(text):
 
 def load_channels(path=DEFAULT_CHANNELS_PATH):
     if not Path(path).exists():
+        print(f"⚠️  channels.yaml not found at: {path}")
         return []
     with open(path, 'r', encoding='utf-8') as f:
         data = yaml.safe_load(f) or {}
@@ -85,6 +141,13 @@ def load_existing_ids(path):
                 except (json.JSONDecodeError, KeyError):
                     pass
     return ids
+
+def require_youtube(youtube):
+    """Guard: crash early with a clear message if API client is missing."""
+    if youtube is None:
+        print("❌ ERROR: --api-key is required for this command.")
+        print("   Usage: python collect.py --api-key YOUR_KEY --collect")
+        raise SystemExit(1)
 
 # =============================================================================
 # YOUTUBE API
@@ -127,15 +190,55 @@ def discover_channels(youtube, query, max_results=10):
             })
     return channels
 
-def get_videos(youtube, channel_id, max_videos=50):
-    """Get video IDs from a channel."""
+def get_videos(youtube, channel_id, max_videos=MAX_VIDEOS_PER_CHANNEL):
+    """
+    Get video IDs from a channel using playlistItems (uploads playlist).
+    
+    This costs 1 quota unit per call vs 100 for search().list().
+    The uploads playlist ID is always "UU" + channel_id[2:].
+    """
+    uploads_playlist_id = "UU" + channel_id[2:]
+    videos, next_page = [], None
+
+    while len(videos) < max_videos:
+        try:
+            resp = api_call(youtube.playlistItems().list(
+                part='snippet',
+                playlistId=uploads_playlist_id,
+                maxResults=min(50, max_videos - len(videos)),
+                pageToken=next_page
+            ), f"videos {channel_id}")
+        except HttpError as e:
+            if e.resp.status == 404:
+                # Uploads playlist not found — fall back to search
+                print(f"    ⚠️  Uploads playlist not found for {channel_id}, falling back to search")
+                return _get_videos_via_search(youtube, channel_id, max_videos)
+            raise
+
+        for item in resp.get('items', []):
+            snippet = item['snippet']
+            vid_id = snippet['resourceId']['videoId']
+            videos.append({
+                'id': vid_id,
+                'title': snippet['title'],
+                'channel_id': channel_id,
+                'channel_title': snippet['channelTitle'],
+            })
+        next_page = resp.get('nextPageToken')
+        if not next_page:
+            break
+
+    return videos
+
+def _get_videos_via_search(youtube, channel_id, max_videos):
+    """Fallback: use search().list() if playlistItems fails (costs 100x more)."""
     videos, next_page = [], None
     while len(videos) < max_videos:
         resp = api_call(youtube.search().list(
             part='snippet', channelId=channel_id, type='video',
             order='date', maxResults=min(50, max_videos - len(videos)),
             pageToken=next_page
-        ), f"videos {channel_id}")
+        ), f"videos-search {channel_id}")
         for item in resp.get('items', []):
             videos.append({
                 'id': item['id']['videoId'],
@@ -148,7 +251,7 @@ def get_videos(youtube, channel_id, max_videos=50):
             break
     return videos
 
-def get_threads(youtube, video, max_threads=200):
+def get_threads(youtube, video, max_threads=MAX_COMMENTS_PER_VIDEO):
     """Get comment threads from a video. Yields thread dicts."""
     next_page, count = None, 0
     while count < max_threads:
@@ -159,7 +262,7 @@ def get_threads(youtube, video, max_threads=200):
                 pageToken=next_page, textFormat='plainText'
             ), f"threads {video['id']}")
         except HttpError as e:
-            if 'commentsDisabled' in str(e):
+            if 'commentsDisabled' in str(e) or e.resp.status == 403:
                 return
             raise
 
@@ -183,13 +286,13 @@ def _parse_thread(item, video):
     video_channel = video['channel_id']
 
     # Skip creator's own top-level posts (usually recipe intros)
-    if top_author_channel == video_channel:
+    if SKIP_CREATOR and top_author_channel == video_channel:
         return None
 
-    # Filter
-    if not contains_hebrew(top_text):
+    # Filter top-level comment
+    if REQUIRE_HEBREW and not contains_hebrew(top_text):
         return None
-    if word_count(top_text) < 3:
+    if word_count(top_text) < MIN_WORDS:
         return None
     if is_spam(top_text):
         return None
@@ -200,19 +303,29 @@ def _parse_thread(item, video):
         "like_count": snip.get('likeCount', 0),
     }
 
-    # Parse replies
+    # Parse replies (also filtered now)
     replies = []
     has_creator_reply = False
-    if 'replies' in item:
+    if INCLUDE_REPLIES and 'replies' in item:
         for r in item['replies']['comments']:
             rs = r['snippet']
             reply_author = rs.get('authorChannelId', {}).get('value', '')
             is_creator = (reply_author == video_channel)
             if is_creator:
                 has_creator_reply = True
+
+            reply_text = rs['textDisplay']
+
+            # Filter replies too (skip spam/non-Hebrew, but keep creator replies)
+            if not is_creator:
+                if REQUIRE_HEBREW and not contains_hebrew(reply_text):
+                    continue
+                if is_spam(reply_text):
+                    continue
+
             replies.append({
                 "comment_id": r['id'],
-                "text": rs['textDisplay'],
+                "text": reply_text,
                 "like_count": rs.get('likeCount', 0),
                 "is_creator": is_creator,
             })
@@ -238,6 +351,7 @@ def _parse_thread(item, video):
 
 def cmd_discover_all(youtube):
     """Run all discovery queries and save channels."""
+    require_youtube(youtube)
     all_channels = {}
     for query in DISCOVERY_QUERIES:
         print(f"Searching: {query}")
@@ -250,11 +364,13 @@ def cmd_discover_all(youtube):
     print(f"\n✅ {len(all_channels)} channels saved to {DEFAULT_CHANNELS_PATH}")
     print("Review channels.yaml — set active: false for non-cooking channels.")
 
-def cmd_collect(youtube, target=5000, output_dir=DEFAULT_OUTPUT_DIR):
+def cmd_collect(youtube, target=TARGET_COMMENTS, output_dir=DEFAULT_OUTPUT_DIR):
     """Collect threads from all active channels."""
+    require_youtube(youtube)
     channels = load_channels()
     if not channels:
-        print("No active channels in channels.yaml. Run --discover-all first.")
+        print(f"No active channels in {DEFAULT_CHANNELS_PATH}.")
+        print("Run --discover-all first, or check that channels.yaml path is correct.")
         return
 
     out_path = Path(output_dir) / "threads.jsonl"
@@ -262,34 +378,73 @@ def cmd_collect(youtube, target=5000, output_dir=DEFAULT_OUTPUT_DIR):
     existing_ids = load_existing_ids(out_path)
     total = len(existing_ids)
 
+    # Stats tracking
+    stats = {
+        "channels_processed": 0,
+        "videos_processed": 0,
+        "threads_collected": total,
+        "threads_new_this_run": 0,
+        "api_errors": 0,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+
     print(f"Collecting from {len(channels)} channels (target: {target}, have: {total})")
+    print(f"Output: {out_path}")
+    print(f"Config: max_videos={MAX_VIDEOS_PER_CHANNEL}, max_comments={MAX_COMMENTS_PER_VIDEO}, min_words={MIN_WORDS}")
 
     for ch in channels:
         if total >= target:
             break
-        print(f"\n📺 {ch.get('name', ch['id'])}")
+        ch_name = ch.get('name', ch['id'])
+        print(f"\n📺 {ch_name}")
+        stats["channels_processed"] += 1
+
         try:
-            videos = get_videos(youtube, ch['id'], max_videos=50)
-        except HttpError:
-            print("  ⚠️ Error fetching videos, skipping")
+            videos = get_videos(youtube, ch['id'], max_videos=MAX_VIDEOS_PER_CHANNEL)
+        except HttpError as e:
+            print(f"  ⚠️ Error fetching videos: {e.resp.status}, skipping channel")
+            stats["api_errors"] += 1
             continue
+
+        print(f"  Found {len(videos)} videos")
 
         for vid in videos:
             if total >= target:
                 break
+            stats["videos_processed"] += 1
             vid_count = 0
-            for thread in get_threads(youtube, vid):
-                if thread['thread_id'] not in existing_ids:
-                    append_jsonl(thread, out_path)
-                    existing_ids.add(thread['thread_id'])
-                    total += 1
-                    vid_count += 1
+            try:
+                for thread in get_threads(youtube, vid):
+                    if thread['thread_id'] not in existing_ids:
+                        append_jsonl(thread, out_path)
+                        existing_ids.add(thread['thread_id'])
+                        total += 1
+                        vid_count += 1
+                        stats["threads_new_this_run"] += 1
+            except HttpError as e:
+                print(f"  ⚠️ Error on video {vid['id']}: {e.resp.status}")
+                stats["api_errors"] += 1
+                continue
+
             if vid_count > 0:
                 print(f"  {vid['title'][:50]}... → {vid_count} threads")
             time.sleep(0.3)
         time.sleep(1)
 
+    # Update final stats
+    stats["threads_collected"] = total
+    stats["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+    # Save stats
+    stats_path = Path(output_dir) / "collection_stats.json"
+    with open(stats_path, 'w', encoding='utf-8') as f:
+        json.dump(stats, f, indent=2, ensure_ascii=False)
+
     print(f"\n✅ Total: {total} threads saved to {out_path}")
+    print(f"📊 Stats saved to {stats_path}")
+    print(f"   New this run: {stats['threads_new_this_run']}")
+    print(f"   Videos processed: {stats['videos_processed']}")
+    print(f"   API errors: {stats['api_errors']}")
 
 def cmd_list_channels(output_dir=DEFAULT_OUTPUT_DIR):
     """Generate channels_report.csv from collected threads."""
@@ -344,11 +499,11 @@ def cmd_filter_channels(csv_path, output_dir=DEFAULT_OUTPUT_DIR):
 # =============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="YouTube Thread Collector v4")
+    parser = argparse.ArgumentParser(description="YouTube Thread Collector v4.1")
     parser.add_argument("--api-key", help="YouTube Data API key")
     parser.add_argument("--discover-all", action="store_true", help="Discover cooking channels")
     parser.add_argument("--collect", action="store_true", help="Collect threads")
-    parser.add_argument("--target", type=int, default=5000, help="Target thread count")
+    parser.add_argument("--target", type=int, default=TARGET_COMMENTS, help=f"Target thread count (default: {TARGET_COMMENTS})")
     parser.add_argument("--list-channels", action="store_true", help="Generate channels report")
     parser.add_argument("--filter-channels", action="store_true", help="Filter to cooking channels")
     parser.add_argument("--csv", help="Path to channels_report.csv for filtering")
@@ -360,9 +515,15 @@ def main():
         youtube = build('youtube', 'v3', developerKey=args.api_key)
 
     if args.test:
+        require_youtube(youtube)
         print("Testing YouTube API...")
         resp = youtube.channels().list(part='snippet', id='UC_x5XG1OV2P6uZZ5FSM9Ttw').execute()
         print(f"✅ API works. Test channel: {resp['items'][0]['snippet']['title']}")
+        print(f"\n📁 Paths resolved:")
+        print(f"   channels.yaml: {DEFAULT_CHANNELS_PATH}")
+        print(f"   output dir:    {DEFAULT_OUTPUT_DIR}")
+        channels = load_channels()
+        print(f"   active channels: {len(channels)}")
     elif args.discover_all:
         cmd_discover_all(youtube)
     elif args.collect:

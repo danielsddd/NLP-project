@@ -18,15 +18,7 @@ channels:
   subscribers: 220000
   youtube_url: https://www.youtube.com/channel/UCc0zfbjbWVBsjeMCp4ZRh6Q
   notes: היי! אני חן מזרחי | חן במטבח- אוכל טעים והגיוני ברוכים הבאים לערוץ האוכל שלי - חן במטבח. פה תוכלו למ
-
-- name: brot von elsa
-  id: UC121YvC-4NLhfXakh9U0qdw
-  active: true
-  category: cooking
-  subscribers: 200000
-  youtube_url: https://www.youtube.com/channel/UC121YvC-4NLhfXakh9U0qdw
-  notes: Hallo Freunde .  Erleben Sie mit uns die köstlichsten Geschmacksrichtungen und Brotrezepte. Entdecke
-
+  
 - name: בקלי קלות ליהי קרויץ -מטבח בקלי קלות -המותג המקורי
   id: UCYRjRbFiLOyKr89dryIDobw
   active: true

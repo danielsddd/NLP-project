@@ -1,98 +1,63 @@
+
 # =============================================================================
-# CONFIGURATION FILE FOR YOUTUBE COMMENT COLLECTOR
+# Recipe Modification Extraction — YouTube Collector Config (v4)
 # =============================================================================
-# Group 11: Daniel Simanovsky & Roei Ben Artzi
-# NLP 2025a - Recipe Modification Extraction
-#
-# Edit this file to customize collection parameters.
-# The Python script will read this configuration.
+# This config is used by youtube_collector/collect.py
+# The collect.py CLI flags override these values when provided.
 # =============================================================================
 
-# -----------------------------------------------------------------------------
-# OUTPUT SETTINGS
-# -----------------------------------------------------------------------------
-output:
-  # Directory where all output files will be saved
-  # Use absolute path or relative to where you run the script
-  directory: "./data/raw_youtube"
-  
-  # Output filename for collected comments
-  comments_file: "comments.jsonl"
-  
-  # Statistics file
-  stats_file: "collection_stats.json"
-  
-  # Log file (set to null to disable file logging)
-  log_file: "./logs/collection.log"
-
-# -----------------------------------------------------------------------------
-# COLLECTION PARAMETERS
-# -----------------------------------------------------------------------------
+# --- Collection targets ---
 collection:
-  # Target number of comments to collect (approximate)
-  target_comments: 30000
-  
-  # Maximum videos to process per channel
-  max_videos_per_channel: 50
-  
-  # Maximum comments to fetch per video
-  max_comments_per_video: 200
-  
-  # Include reply comments (not just top-level)?
-  include_replies: true
+  target_threads: 5000        # Total threads to collect (was target_comments: 3000)
+  max_videos_per_channel: 50  # Videos to scan per channel
+  max_threads_per_video: 200  # Max threads per video
+  include_replies: true       # Collect reply threads (MUST be true for v4)
 
-# -----------------------------------------------------------------------------
-# FILTERING SETTINGS
-# -----------------------------------------------------------------------------
+# --- Filtering ---
 filtering:
-  # Minimum word count for a comment to be kept
-  min_words: 5
-  
-  # Require Hebrew characters in comment?
-  require_hebrew: true
-  
-  # Skip comments from video creator (usually pinned, not modifications)?
-  skip_creator_comments: true
-  
-  # Spam keywords to filter out (comment will be skipped if contains any)
+  min_words: 3                # Minimum words in top comment
+  require_hebrew: true        # At least one Hebrew char in thread
+  skip_creator_top_comments: true   # Skip creator's pinned/top posts
+                                     # BUT keep creator REPLIES (valuable signal)
   spam_keywords:
-    - "הירשמו"        # Subscribe
-    - "לינק"          # Link
     - "http"
     - "https"
     - "www."
-    - "לחצו כאן"      # Click here
-    - "bit.ly"
-    - "tinyurl"
-    - ".com"
-    - ".co.il"
-    - "קישור"         # Link
-    - "פרסומת"        # Advertisement
+    - "subscribe"
+    - "לייק"
+    - "הירשמו"
 
-# -----------------------------------------------------------------------------
-# API SETTINGS
-# -----------------------------------------------------------------------------
+# --- API settings ---
 api:
-  # Rate limiting - delay between API calls (seconds)
-  delay_between_videos: 0.5
-  delay_between_channels: 2.0
-  
-  # Retry settings for failed API calls
-  max_retries: 5
-  base_retry_delay: 1.0
-  
-  # Region code for localized search results
-  region_code: "IL"
+  region_code: "IL"           # Bias search toward Israel
+  delay_between_videos: 0.3   # Seconds between API calls (rate limiting)
+  delay_between_channels: 1.0
+  max_retries: 3
 
-# -----------------------------------------------------------------------------
-# MODIFICATION DETECTION (for pre-filtering and keyword tagging)
-# -----------------------------------------------------------------------------
-# Covers: past tense (what I did), recommendations, corrections, warnings.
-# Conjugation variants are included — Hebrew verbs change form heavily.
-# Comments WITHOUT these keywords are still collected, but flagged accordingly.
+# --- Output ---
+output:
+  directory: "./data/raw_youtube"
+  threads_file: "threads.jsonl"                  # Raw collected threads
+  cooking_only_file: "threads_cooking_only.jsonl" # After channel filtering
+  channels_report: "channels_report.csv"          # For manual review
+  stats_file: "collection_stats.json"
+
+# --- Channel discovery queries (Hebrew cooking searches) ---
+discovery_queries:
+  - "מתכונים בישול"
+  - "אפייה ביתית"
+  - "בישול ביתי"
+  - "שף ישראלי"
+  - "מתכון עוגה"
+  - "מתכון לחם"
+  - "בישול טבעוני"
+  - "קינוחים"
+  - "ארוחת ערב"
+  - "מאפים ביתיים"
+
+# --- Modification keywords (used for enrichment stats, not filtering) ---
 
 modification_keywords:
-
   # ---------------------------------------------------------------------------
   # QUANTITY — changing amounts, measurements, ratios
   # ---------------------------------------------------------------------------
