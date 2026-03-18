@@ -1,9 +1,9 @@
 #!/bin/bash
 # =============================================================================
-# SLURM Script: Data Preprocessing
+# SLURM Script: Data Preprocessing (FIXED)
 # =============================================================================
 # Convert silver labels to BIO format for training
-# This is CPU-intensive (tokenization), not GPU-intensive
+# FIX: --val-split and --test-split now accepted by fixed prepare_data.py
 # Submit with: sbatch preprocess_data.sbatch
 # =============================================================================
 
@@ -37,7 +37,7 @@ conda activate recipe_nlp
 # Set HuggingFace cache paths
 export HF_HOME=$USER_DIR/.cache/huggingface
 export TRANSFORMERS_CACHE=$HF_HOME
-export TOKENIZERS_PARALLELISM=true  # Enable for CPU parallelism
+export TOKENIZERS_PARALLELISM=true
 
 # Navigate to project
 cd $PROJECT_DIR

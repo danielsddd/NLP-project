@@ -1,8 +1,9 @@
 #!/bin/bash
 # =============================================================================
-# SLURM Script: Model Evaluation
+# SLURM Script: Model Evaluation (FIXED)
 # =============================================================================
 # Evaluate trained models on test/gold set
+# FIX: Changed dataset_test.jsonl to test.jsonl to match prepare_data.py output
 # Submit with: sbatch evaluate_model.sbatch
 # =============================================================================
 
@@ -21,7 +22,6 @@
 USER_DIR="/vol/joberant_nobck/data/NLP_368307701_2526a/$USER"
 PROJECT_DIR="$USER_DIR/recipe_modification_extraction"
 
-# Models to evaluate (can be modified)
 ALEPHBERT_MODEL="models/checkpoints/student/best_model"
 MBERT_MODEL="models/baselines/mbert/best_model"
 
@@ -56,7 +56,7 @@ echo "=========================================="
 if [ -d "$ALEPHBERT_MODEL" ]; then
     python -m src.evaluation.evaluate \
         --model-path "$ALEPHBERT_MODEL" \
-        --test-file data/processed/dataset_test.jsonl \
+        --test-file data/processed/test.jsonl \
         --output-dir results/alephbert \
         --bootstrap
 else
@@ -72,7 +72,7 @@ echo "=========================================="
 if [ -d "$MBERT_MODEL" ]; then
     python -m src.evaluation.evaluate \
         --model-path "$MBERT_MODEL" \
-        --test-file data/processed/dataset_test.jsonl \
+        --test-file data/processed/test.jsonl \
         --output-dir results/mbert \
         --bootstrap
 else
@@ -82,15 +82,20 @@ fi
 
 echo ""
 echo "=========================================="
-echo "3. Running Simple Baselines"
+echo "3. Running Baselines"
 echo "=========================================="
 
 python -m src.baselines.run_baselines \
-    --data-dir data/processed
+    --data-dir data/processed \
+    --output-dir results/baselines \
+    --split test
 
 echo ""
 echo "=========================================="
 echo "EVALUATION COMPLETE"
-echo "Results saved to: results/"
 echo "=========================================="
+echo "Results saved to: results/"
+ls -la results/
+
 echo "End Time: $(date)"
+echo "=========================================="

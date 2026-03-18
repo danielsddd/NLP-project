@@ -5,10 +5,10 @@ Convert silver labels to BIO-tagged training data.
 """
 
 from .prepare_data import (
-    DataPreprocessor,
-    ProcessedExample,
-    AlignmentStats,
-    align_spans_to_bio,
+    align_example,
+    process_file,
+    get_source_text,
+    normalize_hebrew,
     visualize_alignment,
     BIO_LABEL2ID,
     BIO_ID2LABEL,
@@ -17,10 +17,10 @@ from .prepare_data import (
 )
 
 __all__ = [
-    "DataPreprocessor",
-    "ProcessedExample",
-    "AlignmentStats",
-    "align_spans_to_bio",
+    "align_example",
+    "process_file",
+    "get_source_text",
+    "normalize_hebrew",
     "visualize_alignment",
     "BIO_LABEL2ID",
     "BIO_ID2LABEL",

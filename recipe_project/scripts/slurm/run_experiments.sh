@@ -1,93 +1,37 @@
 #!/bin/bash
 # =============================================================================
-# Master Workflow Script: Recipe Modification Extraction
+# Master Experiment Runner (FIXED)
 # =============================================================================
-# This script shows the complete pipeline and can submit jobs in sequence
-# 
-# Usage:
-#   bash run_experiments.sh [step]
-#
-# Steps:
-#   test      - Run GPU test only
-#   preprocess - Preprocess data (after teacher labeling)
-#   train     - Train AlephBERT student
-#   baseline  - Train mBERT baseline  
-#   evaluate  - Evaluate all models
-#   ablation  - Run data size ablation study
-#   all       - Run everything (preprocess -> train -> baseline -> evaluate)
+# FIX: Changed all dataset_train.jsonl/dataset_val.jsonl/dataset_test.jsonl
+#      references to train.jsonl/val.jsonl/test.jsonl to match prepare_data.py output
 # =============================================================================
 
-set -e  # Exit on error
+set -e
 
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
+# Configuration
 USER_DIR="/vol/joberant_nobck/data/NLP_368307701_2526a/$USER"
 PROJECT_DIR="$USER_DIR/recipe_modification_extraction"
 SCRIPTS_DIR="$PROJECT_DIR/scripts/slurm"
 
-# Colors for output
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-
-print_header() {
-    echo ""
-    echo -e "${GREEN}=========================================="
-    echo "$1"
-    echo -e "==========================================${NC}"
-}
-
-print_warning() {
-    echo -e "${YELLOW}⚠️  $1${NC}"
-}
-
-print_error() {
-    echo -e "${RED}❌ $1${NC}"
-}
-
-check_file() {
-    if [ ! -f "$1" ]; then
-        print_error "File not found: $1"
-        return 1
-    fi
-    return 0
-}
+print_header() { echo -e "\n${GREEN}=== $1 ===${NC}"; }
+print_error()  { echo -e "${RED}ERROR: $1${NC}"; }
+print_warning(){ echo -e "${YELLOW}WARNING: $1${NC}"; }
 
 submit_job() {
-    local script=$1
-    local description=$2
-    
-    print_header "Submitting: $description"
-    
+    local script="$1"
+    local name="$2"
     if [ ! -f "$script" ]; then
         print_error "Script not found: $script"
         return 1
     fi
-    
-    job_id=$(sbatch $script | awk '{print $4}')
-    echo "Job submitted: $job_id"
-    echo "Monitor with: squeue -j $job_id"
-    echo "Logs at: $USER_DIR/logs/${job_id}_*.out"
-    
-    return 0
-}
-
-wait_for_job() {
-    local job_id=$1
-    echo "Waiting for job $job_id to complete..."
-    
-    while squeue -j $job_id 2>/dev/null | grep -q $job_id; do
-        sleep 30
-        echo "  Still running..."
-    done
-    
-    echo "Job $job_id completed"
+    echo "Submitting: $name"
+    sbatch "$script"
 }
 
 # =============================================================================
@@ -100,9 +44,8 @@ step_test() {
 }
 
 step_preprocess() {
-    print_header "Step: Data Preprocessing"
-    
-    # Check if silver labels exist
+    print_header "Step: Preprocess Data"
+
     if [ ! -f "$PROJECT_DIR/data/silver_labels/teacher_output.jsonl" ]; then
         print_error "Silver labels not found!"
         echo "Run teacher labeling first (locally):"
@@ -111,31 +54,32 @@ step_preprocess() {
         echo "      --provider gemini"
         return 1
     fi
-    
+
     submit_job "$SCRIPTS_DIR/preprocess_data.sbatch" "Data Preprocessing"
 }
 
 step_train() {
     print_header "Step: Train AlephBERT Student"
-    
-    # Check if processed data exists
-    if [ ! -f "$PROJECT_DIR/data/processed/dataset_train.jsonl" ]; then
+
+    # FIX: was dataset_train.jsonl, now train.jsonl
+    if [ ! -f "$PROJECT_DIR/data/processed/train.jsonl" ]; then
         print_error "Processed data not found!"
         echo "Run preprocessing first: bash $0 preprocess"
         return 1
     fi
-    
+
     submit_job "$SCRIPTS_DIR/train_alephbert.sbatch" "AlephBERT Training"
 }
 
 step_baseline() {
     print_header "Step: Train mBERT Baseline"
-    
-    if [ ! -f "$PROJECT_DIR/data/processed/dataset_train.jsonl" ]; then
+
+    # FIX: was dataset_train.jsonl, now train.jsonl
+    if [ ! -f "$PROJECT_DIR/data/processed/train.jsonl" ]; then
         print_error "Processed data not found!"
         return 1
     fi
-    
+
     submit_job "$SCRIPTS_DIR/train_mbert.sbatch" "mBERT Baseline Training"
 }
 
@@ -146,18 +90,19 @@ step_evaluate() {
 
 step_ablation() {
     print_header "Step: Data Size Ablation Study"
-    
-    if [ ! -f "$PROJECT_DIR/data/processed/dataset_train.jsonl" ]; then
+
+    # FIX: was dataset_train.jsonl, now train.jsonl
+    if [ ! -f "$PROJECT_DIR/data/processed/train.jsonl" ]; then
         print_error "Processed data not found!"
         return 1
     fi
-    
+
     submit_job "$SCRIPTS_DIR/ablation_data_size.sbatch" "Ablation Study (6 jobs)"
 }
 
 step_all() {
     print_header "Running Complete Pipeline"
-    
+
     echo ""
     echo "This will submit jobs in sequence:"
     echo "  1. Preprocess data"
@@ -167,12 +112,12 @@ step_all() {
     echo ""
     read -p "Continue? (y/n) " -n 1 -r
     echo ""
-    
+
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         echo "Aborted"
         return 1
     fi
-    
+
     # Submit preprocessing
     step_preprocess
     echo ""
@@ -190,18 +135,19 @@ step_all() {
 
 show_status() {
     print_header "Project Status"
-    
+
     echo ""
     echo "Current jobs:"
     squeue -u $USER
-    
+
     echo ""
     echo "Data files:"
+    # FIX: was dataset_train.jsonl etc., now train.jsonl etc.
     for f in "data/raw_youtube/comments.jsonl" \
              "data/silver_labels/teacher_output.jsonl" \
-             "data/processed/dataset_train.jsonl" \
-             "data/processed/dataset_val.jsonl" \
-             "data/processed/dataset_test.jsonl"; do
+             "data/processed/train.jsonl" \
+             "data/processed/val.jsonl" \
+             "data/processed/test.jsonl"; do
         if [ -f "$PROJECT_DIR/$f" ]; then
             count=$(wc -l < "$PROJECT_DIR/$f")
             echo "  ✓ $f ($count lines)"
@@ -209,7 +155,7 @@ show_status() {
             echo "  ✗ $f (not found)"
         fi
     done
-    
+
     echo ""
     echo "Models:"
     for d in "models/checkpoints/student/best_model" \
@@ -220,12 +166,12 @@ show_status() {
             echo "  ✗ $d (not trained)"
         fi
     done
-    
+
     echo ""
     echo "Results:"
     for f in "results/alephbert/evaluation_results.json" \
              "results/mbert/evaluation_results.json" \
-             "results/baseline_results.json"; do
+             "results/baselines/baseline_results.json"; do
         if [ -f "$PROJECT_DIR/$f" ]; then
             echo "  ✓ $f"
         else
