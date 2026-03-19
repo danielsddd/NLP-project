@@ -688,7 +688,7 @@ def process_file(input_path, output_dir, model_name="onlplab/alephbert-base",
             "val_test_overlap": len(leak_vt),
         },
     }
-    with open(out / "stats.json", 'w') as f:
+    with open(out / "stats.json", 'w', encoding='utf-8') as f:
         json.dump(stats_dict, f, indent=2, ensure_ascii=False)
     print(f"  Saved stats.json")
 
