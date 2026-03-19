@@ -1,54 +1,54 @@
 #!/usr/bin/env python3
 """
-Dual-Teacher Silver Label Generator — v5
-=========================================
-Generates silver labels using TWO LLM teachers and keeps agreement-based labels.
+Teacher Silver Label Generator — v9 (Three-Pass with Majority Vote)
+====================================================================
+Pass 1: Label all threads with Gemini (primary) + Groq fallback. Batched.
+Pass 2: Re-label with same Gemini at temp=0.3 (intra-annotator agreement).
+Pass 3: Re-label with Cerebras Qwen 235B (inter-annotator agreement).
+Final: Majority vote (2/3 agree) → final label. All-3-disagree → manual review.
 
-Teachers:
-  1. Gemini 3.1 Flash Lite  (Google AI Studio — free tier, 500 RPD / 15 RPM)
-  2. Llama 3.3 70B          (Groq — free tier, fast)
-
-Modes:
-  --teacher groq     → Groq only  (label all 5,000 — primary)
-  --teacher gemini   → Gemini only (label subset for agreement)
-  --teacher both     → Both teachers, keep only agreements (highest quality)
-
-Recommended workflow:
-    # Step 1: Label ALL threads with Groq (~3 hours)
+Usage:
+    # Pass 1 — label everything (Gemini primary, Groq fallback):
     python -m src.teacher_labeling.generate_labels \
-        -i data/raw_youtube/threads.jsonl \
-        --groq-key YOUR_KEY --teacher groq
+        -i data/raw_youtube/threads.jsonl --limit 5000 --batch-size 20
 
-    # Step 2: Label 500-thread subset with Gemini for agreement analysis
-    python -m src.teacher_labeling.generate_labels \
-        -i data/raw_youtube/threads.jsonl \
-        --gemini-key YOUR_KEY --teacher gemini --limit 500 \
-        -o data/silver_labels/gemini_subset.jsonl
+    # Pass 2 — same Gemini, different temperature (intra-annotator):
+    python -m src.teacher_labeling.generate_labels --second-pass --limit 5000 --batch-size 20
 
-    # Step 3: Compute agreement between the two
-    python -m src.teacher_labeling.generate_labels \
-        --compare \
-        --groq-file data/silver_labels/teacher_output.jsonl \
-        --gemini-file data/silver_labels/gemini_subset.jsonl \
-        -o data/silver_labels/agreement_report.json
+    # Pass 3 — Cerebras Qwen 235B (inter-annotator):
+    python -m src.teacher_labeling.generate_labels --third-pass --limit 5000 --batch-size 20
+
+    # Compute majority vote + export disagreements:
+    python -m src.teacher_labeling.generate_labels --finalize
+
+    # Export only needs-review records:
+    python -m src.teacher_labeling.generate_labels --export-review
+
+    # View agreement stats:
+    python -m src.teacher_labeling.generate_labels --agreement-stats
+
+API keys read from .env automatically:
+    GOOGLE_API_KEY=your_gemini_key
+    GROQ_API_KEY=your_groq_key
+    CEREBRAS_API_KEY=your_cerebras_key
 """
 
-from html import parser
 import json
 import re
 import time
 import argparse
 from pathlib import Path
 from datetime import datetime, timezone
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 from dotenv import load_dotenv
 import os
+import shutil
 
-load_dotenv()  # reads .env file automatically
+load_dotenv()
 
 # ---------------------------------------------------------------------------
-# Optional imports — fail gracefully so the user gets a clear message
+# Optional imports
 # ---------------------------------------------------------------------------
 try:
     from google import genai
@@ -63,17 +63,36 @@ try:
 except ImportError:
     GROQ_AVAILABLE = False
 
+try:
+    from openai import OpenAI as OpenAIClient
+    OPENAI_COMPAT_AVAILABLE = True
+except ImportError:
+    OPENAI_COMPAT_AVAILABLE = False
+
 
 # =============================================================================
-# DATA CLASSES  (exported by __init__.py)
+# CONFIGURATION
+# =============================================================================
+
+BATCH_SIZE = 5
+DEFAULT_OUTPUT = "data/silver_labels/teacher_output.jsonl"
+REVIEW_OUTPUT = "data/silver_labels/needs_review.jsonl"
+
+GEMINI_FAMILY = "gemini"
+GROQ_FAMILY = "groq"
+CEREBRAS_FAMILY = "cerebras"
+
+
+# =============================================================================
+# DATA CLASSES (exported by __init__.py)
 # =============================================================================
 
 @dataclass
 class Modification:
     """A single extracted modification."""
-    span: str                           # Exact Hebrew text substring
-    aspect: str                         # SUBSTITUTION | QUANTITY | TECHNIQUE | ADDITION
-    source_comment: str = "top"         # "top" or "reply_1", "reply_2", …
+    span: str
+    aspect: str
+    source_comment: str = "top"
     confidence: float = 0.0
 
 @dataclass
@@ -81,9 +100,10 @@ class TeacherOutput:
     """Parsed output from one teacher for a single thread."""
     modifications: List[Modification] = field(default_factory=list)
     has_modification: bool = False
-    thread_type: str = "statement"      # question | statement | mixed
+    thread_type: str = "statement"
     raw_response: Optional[str] = None
     error: Optional[str] = None
+    is_rate_limit: bool = False
 
 @dataclass
 class LabeledComment:
@@ -97,10 +117,7 @@ class LabeledComment:
     replies_texts: List[str] = field(default_factory=list)
     has_creator_reply: bool = False
     total_likes: int = 0
-    teacher_output: Optional[Dict] = None       # final merged / single output
-    gemini_output: Optional[Dict] = None        # raw Gemini result
-    groq_output: Optional[Dict] = None          # raw Groq result
-    agreement: Optional[str] = None             # "full" | "partial" | "none" | "single"
+    teacher_output: Optional[dict] = None
     teacher_model: str = ""
     labeled_at: str = ""
 
@@ -113,13 +130,16 @@ VALID_ASPECTS = {"SUBSTITUTION", "QUANTITY", "TECHNIQUE", "ADDITION"}
 
 
 # =============================================================================
-# SHARED PROMPT — identical for both teachers to ensure fair comparison
+# SYSTEM PROMPT — supports batched threads
 # =============================================================================
 
 SYSTEM_PROMPT = """You are an expert culinary NLP assistant specializing in Hebrew text.
 Your task: analyze comment threads from cooking videos and extract recipe modification suggestions.
 
-For each thread you receive:
+You will receive MULTIPLE threads in one request, each marked with === THREAD N (ID: xxx) ===.
+You must return a JSON array with one result object per thread, in the same order.
+
+For each thread:
 - [TOP COMMENT]: The main comment
 - [REPLY N, user/creator]: Replies to the comment
 
@@ -133,73 +153,90 @@ RULES:
 7. source_comment must be "top" or "reply_1", "reply_2", etc.
 8. confidence is 0.0-1.0. Creator replies get 0.90+.
 
-OUTPUT FORMAT (strict JSON, no markdown, no explanation):
-{
-  "modifications": [
-    {"span": "<exact text>", "aspect": "SUBSTITUTION|QUANTITY|TECHNIQUE|ADDITION", "source_comment": "top|reply_N", "confidence": 0.0-1.0}
-  ],
-  "has_modification": true|false,
-  "thread_type": "question|statement|mixed"
-}
+OUTPUT FORMAT — a JSON array, one object per thread (strict JSON, no markdown, no explanation):
+[
+  {
+    "thread_id": "<id from header>",
+    "modifications": [
+      {"span": "<exact text>", "aspect": "SUBSTITUTION|QUANTITY|TECHNIQUE|ADDITION", "source_comment": "top|reply_N", "confidence": 0.0-1.0}
+    ],
+    "has_modification": true|false,
+    "thread_type": "question|statement|mixed"
+  }
+]
 
-EXAMPLES:
-
-Thread: [TOP COMMENT] "אפשר במקום חמאה שמן קוקוס?"
+EXAMPLE INPUT:
+=== THREAD 1 (ID: abc123) ===
+[TOP COMMENT] "אפשר במקום חמאה שמן קוקוס?"
 [REPLY 1, user] "כן! אותה כמות, יצא מעולה"
-Output: {"modifications": [{"span": "שמן קוקוס", "aspect": "SUBSTITUTION", "source_comment": "reply_1", "confidence": 0.85}], "has_modification": true, "thread_type": "question"}
 
-Thread: [TOP COMMENT] "שמתי כפול סוכר ויצא מתוק מדי"
-Output: {"modifications": [{"span": "כפול סוכר", "aspect": "QUANTITY", "source_comment": "top", "confidence": 0.90}], "has_modification": true, "thread_type": "statement"}
+=== THREAD 2 (ID: def456) ===
+[TOP COMMENT] "יצא מעולה! תודה רבה!"
 
-Thread: [TOP COMMENT] "אפשר לעשות בלי ביצים?"
-Output: {"modifications": [], "has_modification": false, "thread_type": "question"}
-
-Thread: [TOP COMMENT] "יצא מעולה! תודה רבה!"
-Output: {"modifications": [], "has_modification": false, "thread_type": "statement"}
-
-Thread: [TOP COMMENT] "השתמשתי בקמח כוסמין במקום רגיל והוספתי קינמון"
-Output: {"modifications": [{"span": "קמח כוסמין", "aspect": "SUBSTITUTION", "source_comment": "top", "confidence": 0.90}, {"span": "הוספתי קינמון", "aspect": "ADDITION", "source_comment": "top", "confidence": 0.85}], "has_modification": true, "thread_type": "statement"}"""
+EXAMPLE OUTPUT:
+[
+  {"thread_id": "abc123", "modifications": [{"span": "שמן קוקוס", "aspect": "SUBSTITUTION", "source_comment": "reply_1", "confidence": 0.85}], "has_modification": true, "thread_type": "question"},
+  {"thread_id": "def456", "modifications": [], "has_modification": false, "thread_type": "statement"}
+]"""
 
 
 # =============================================================================
-# THREAD FORMATTING  (shared)
+# THREAD FORMATTING
 # =============================================================================
 
 def format_thread(thread: dict) -> str:
-    """Format a thread dict into the prompt text both teachers receive."""
-    lines = [f'[TOP COMMENT] "{thread["top_comment"]["text"]}"']
-    for i, reply in enumerate(thread.get("replies", []), 1):
-        role = "creator" if reply.get("is_creator") else "user"
-        lines.append(f'[REPLY {i}, {role}] "{reply["text"]}"')
+    """Format a single thread into prompt text."""
+    if "top_comment" in thread:
+        lines = [f'[TOP COMMENT] "{thread["top_comment"]["text"]}"']
+        for i, reply in enumerate(thread.get("replies", []), 1):
+            role = "creator" if reply.get("is_creator") else "user"
+            lines.append(f'[REPLY {i}, {role}] "{reply["text"]}"')
+    else:
+        lines = [f'[TOP COMMENT] "{thread["top_comment_text"]}"']
+        for i, reply_text in enumerate(thread.get("replies_texts", []), 1):
+            lines.append(f'[REPLY {i}, user] "{reply_text}"')
     return "\n".join(lines)
 
 
+def format_batch(threads: List[dict]) -> str:
+    """Format multiple threads into a single batched prompt."""
+    parts = []
+    for idx, thread in enumerate(threads, 1):
+        tid = thread.get("thread_id", f"unknown_{idx}")
+        header = f"=== THREAD {idx} (ID: {tid}) ==="
+        body = format_thread(thread)
+        parts.append(f"{header}\n{body}")
+    return "\n\n".join(parts)
+
+
 # =============================================================================
-# JSON PARSING  (shared)
+# JSON PARSING
 # =============================================================================
 
-def parse_json_response(raw: str) -> Optional[dict]:
-    """Robustly parse JSON from an LLM response that might contain markdown."""
+def parse_json_response(raw: str) -> Any:
+    """Robustly parse JSON (object or array) from an LLM response."""
     text = raw.strip()
 
-    # Try direct parse first
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # Strip markdown code fences
     if text.startswith("```"):
-        # Remove opening fence (with optional "json" label)
         text = re.sub(r'^```(?:json)?\s*\n?', '', text)
-        # Remove closing fence
         text = re.sub(r'\n?```\s*$', '', text)
         try:
             return json.loads(text.strip())
         except json.JSONDecodeError:
             pass
 
-    # Try to find JSON object in the text
+    match = re.search(r'\[.*\]', text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+
     match = re.search(r'\{.*\}', text, re.DOTALL)
     if match:
         try:
@@ -210,19 +247,17 @@ def parse_json_response(raw: str) -> Optional[dict]:
     return None
 
 
-def validate_teacher_output(parsed: dict) -> Optional[dict]:
-    """Validate and sanitize a parsed teacher output dict."""
+def validate_single_output(parsed: dict) -> Optional[dict]:
+    """Validate and sanitize a parsed teacher output dict for one thread."""
     if not isinstance(parsed, dict):
         return None
 
-    # Ensure required fields
     result = {
         "modifications": [],
         "has_modification": bool(parsed.get("has_modification", False)),
         "thread_type": parsed.get("thread_type", "statement"),
     }
 
-    # Validate each modification
     for mod in parsed.get("modifications", []):
         if not isinstance(mod, dict):
             continue
@@ -237,7 +272,6 @@ def validate_teacher_output(parsed: dict) -> Optional[dict]:
             "confidence": min(1.0, max(0.0, float(mod.get("confidence", 0.5)))),
         })
 
-    # Fix consistency: if mods exist, has_modification must be True
     if result["modifications"]:
         result["has_modification"] = True
     if not result["modifications"]:
@@ -246,92 +280,130 @@ def validate_teacher_output(parsed: dict) -> Optional[dict]:
     return result
 
 
+def parse_batch_response(raw: str, threads: List[dict]) -> Dict[str, Optional[dict]]:
+    """Parse a batch response → {thread_id: validated_output or None}."""
+    thread_ids = [t["thread_id"] for t in threads]
+    results = {tid: None for tid in thread_ids}
+
+    parsed = parse_json_response(raw)
+    if parsed is None:
+        return results
+
+    if isinstance(parsed, list):
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            tid = item.get("thread_id", "")
+            if tid in results:
+                validated = validate_single_output(item)
+                if validated:
+                    results[tid] = validated
+
+        matched_count = sum(1 for v in results.values() if v is not None)
+        if matched_count == 0 and len(parsed) == len(threads):
+            for tid, item in zip(thread_ids, parsed):
+                if isinstance(item, dict):
+                    validated = validate_single_output(item)
+                    if validated:
+                        results[tid] = validated
+
+    elif isinstance(parsed, dict) and len(threads) == 1:
+        validated = validate_single_output(parsed)
+        if validated:
+            results[thread_ids[0]] = validated
+
+    return results
+
+
 # =============================================================================
-# TEACHER: GEMINI 3.1 FLASH LITE  (free via AI Studio)
+# RATE LIMIT DETECTION
 # =============================================================================
+
+def is_rate_limit_error(error: Exception) -> bool:
+    """Check if an exception is a rate limit / quota error."""
+    msg = str(error).lower()
+    keywords = [
+        "rate limit", "rate_limit", "ratelimit",
+        "quota", "resource exhausted", "resourceexhausted",
+        "429", "too many requests", "try again later",
+        "tokens per minute", "requests per minute",
+        "requests per day", "rpm", "rpd", "tpm",
+    ]
+    return any(kw in msg for kw in keywords)
+
+
+def detect_model_family(model_name: str) -> str:
+    """Detect whether a model name belongs to a known family."""
+    if not model_name:
+        return ""
+    name = model_name.lower()
+    if "gemini" in name:
+        return GEMINI_FAMILY
+    if "llama" in name or "mixtral" in name or "groq" in name:
+        return GROQ_FAMILY
+    if "qwen" in name or "cerebras" in name:
+        return CEREBRAS_FAMILY
+    return ""
+
+
+# =============================================================================
+# TEACHER: GEMINI
+# =============================================================================
+
 class GeminiTeacher:
-    """
-    Teacher model using Google Gemini 3.1 Flash Lite.
-
-    Free tier limits (Google AI Studio):
-        RPM:  15
-        RPD:  500
-        TPM:  250,000
-
-    For 500-thread agreement subset → fits in 1 day.
-    """
+    """Google Gemini — primary teacher (free tier)."""
 
     NAME = "gemini-3.1-flash-lite-preview"
-    # 15 RPM → 4 seconds between calls is safe
-    MIN_DELAY = 4.5
+    FAMILY = GEMINI_FAMILY
+    MIN_DELAY = 6.0  # 15 RPM → safe margin
 
-    def __init__(self, api_key: str, model_name: str = None):
+    def __init__(self, api_key: str, model_name: str = None, temperature: float = 0.1):
         if not GEMINI_AVAILABLE:
-            raise ImportError(
-                "google-genai not installed. Run: pip install google-genai"
-            )
+            raise ImportError("google-genai not installed. Run: pip install google-genai")
         self.client = genai.Client(api_key=api_key)
         self.model_name = model_name or self.NAME
+        self.temperature = temperature
 
-    def label(self, thread: dict) -> TeacherOutput:
-        """Label a single thread. Returns TeacherOutput."""
-        prompt_text = format_thread(thread)
+    def label_batch(self, threads: List[dict]) -> tuple:
+        """Returns (results_dict, error_str, is_rate_limit)."""
+        prompt_text = format_batch(threads)
         try:
             response = self.client.models.generate_content(
                 model=self.model_name,
                 contents=prompt_text,
                 config=genai_types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT,
-                    temperature=0.1,
+                    temperature=self.temperature,
                     response_mime_type="application/json",
                 ),
             )
             raw = response.text
-            parsed = parse_json_response(raw)
-            if parsed is None:
-                return TeacherOutput(error=f"JSON parse failed: {raw[:200]}", raw_response=raw)
-
-            validated = validate_teacher_output(parsed)
-            if validated is None:
-                return TeacherOutput(error="Validation failed", raw_response=raw)
-
-            mods = [Modification(**m) for m in validated["modifications"]]
-            return TeacherOutput(
-                modifications=mods,
-                has_modification=validated["has_modification"],
-                thread_type=validated["thread_type"],
-                raw_response=raw,
-            )
+            results = parse_batch_response(raw, threads)
+            return results, None, False
         except Exception as e:
-            return TeacherOutput(error=str(e))
+            return None, str(e), is_rate_limit_error(e)
+
 
 # =============================================================================
-# TEACHER: GROQ  (Llama 3.3 70B Versatile)
+# TEACHER: GROQ
 # =============================================================================
 
 class GroqTeacher:
-    """
-    Teacher model using Llama 3.3 70B via Groq.
-
-    Free tier — fast inference, generous limits.
-    Fallback model: meta-llama/llama-4-scout-17b-16e-instruct
-    """
+    """Groq (Llama 3.3 70B) — fallback teacher."""
 
     NAME = "llama-3.3-70b-versatile"
-    # ~30 RPM is safe for free tier
+    FAMILY = GROQ_FAMILY
     MIN_DELAY = 2.5
 
     def __init__(self, api_key: str, model_name: str = None):
         if not GROQ_AVAILABLE:
-            raise ImportError(
-                "groq not installed. Run: pip install groq"
-            )
+            raise ImportError("groq not installed. Run: pip install groq")
         self.client = Groq(api_key=api_key)
         self.model_name = model_name or self.NAME
 
-    def label(self, thread: dict) -> TeacherOutput:
-        """Label a single thread. Returns TeacherOutput."""
-        prompt_text = format_thread(thread)
+    def label_batch(self, threads: List[dict]) -> tuple:
+        """Returns (results_dict, error_str, is_rate_limit)."""
+        prompt_text = format_batch(threads)
         try:
             completion = self.client.chat.completions.create(
                 model=self.model_name,
@@ -340,258 +412,142 @@ class GroqTeacher:
                     {"role": "user", "content": prompt_text},
                 ],
                 temperature=0.1,
-                max_tokens=1024,
+                max_tokens=4096,
             )
             raw = completion.choices[0].message.content
-            parsed = parse_json_response(raw)
-            if parsed is None:
-                return TeacherOutput(error=f"JSON parse failed: {raw[:200]}", raw_response=raw)
-
-            validated = validate_teacher_output(parsed)
-            if validated is None:
-                return TeacherOutput(error="Validation failed", raw_response=raw)
-
-            mods = [Modification(**m) for m in validated["modifications"]]
-            return TeacherOutput(
-                modifications=mods,
-                has_modification=validated["has_modification"],
-                thread_type=validated["thread_type"],
-                raw_response=raw,
-            )
+            results = parse_batch_response(raw, threads)
+            return results, None, False
         except Exception as e:
-            return TeacherOutput(error=str(e))
+            return None, str(e), is_rate_limit_error(e)
 
 
 # =============================================================================
-# AGREEMENT LOGIC
+# TEACHER: CEREBRAS (Qwen 3 235B via OpenAI-compatible API)
 # =============================================================================
 
-def compute_agreement(gemini_out: TeacherOutput, groq_out: TeacherOutput) -> dict:
-    """
-    Compare two teacher outputs and return merged result + agreement level.
+class CerebrasTeacher:
+    """Cerebras Qwen 3 235B — third annotator for majority vote."""
 
-    Agreement levels:
-      - "full"    : both agree on has_modification AND same aspects found
-      - "partial" : both agree on has_modification, but differ on some aspects
-      - "none"    : disagree on has_modification entirely
-    """
-    # If either had an error, fall back to the one that worked
-    if gemini_out.error and groq_out.error:
-        return {"merged": None, "agreement": "both_error"}
-    if gemini_out.error:
-        return {"merged": _output_to_dict(groq_out), "agreement": "groq_only"}
-    if groq_out.error:
-        return {"merged": _output_to_dict(gemini_out), "agreement": "gemini_only"}
+    NAME = "qwen-3-235b-a22b-instruct-2507"
+    FAMILY = CEREBRAS_FAMILY
+    MIN_DELAY = 8.0  
 
-    # Both succeeded — compare
-    g_has = gemini_out.has_modification
-    q_has = groq_out.has_modification
+    def __init__(self, api_key: str, model_name: str = None):
+        if not OPENAI_COMPAT_AVAILABLE:
+            raise ImportError("openai not installed. Run: pip install openai")
+        self.client = OpenAIClient(
+            api_key=api_key,
+            base_url="https://api.cerebras.ai/v1",
+        )
+        self.model_name = model_name or self.NAME
 
-    if g_has != q_has:
-        # Disagree on whether modifications exist at all
-        # Keep modifications if either found them (recall-oriented)
-        if g_has:
-            return {"merged": _output_to_dict(gemini_out), "agreement": "none"}
-        else:
-            return {"merged": _output_to_dict(groq_out), "agreement": "none"}
+    def label_batch(self, threads: List[dict]) -> tuple:
+        """Returns (results_dict, error_str, is_rate_limit)."""
+        prompt_text = format_batch(threads)
+        try:
+            completion = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt_text},
+                ],
+                temperature=0.1,
+                max_tokens=4096,
+            )
+            raw = completion.choices[0].message.content
+            results = parse_batch_response(raw, threads)
+            return results, None, False
+        except Exception as e:
+            return None, str(e), is_rate_limit_error(e)
 
-    if not g_has and not q_has:
-        # Both agree: no modification
-        return {
-            "merged": {
-                "modifications": [],
-                "has_modification": False,
-                "thread_type": gemini_out.thread_type,
-            },
-            "agreement": "full",
-        }
 
-    # Both found modifications — compare aspects
-    g_aspects = {m.aspect for m in gemini_out.modifications}
-    q_aspects = {m.aspect for m in groq_out.modifications}
+# =============================================================================
+# AGREEMENT COMPUTATION
+# =============================================================================
 
-    if g_aspects == q_aspects:
-        agreement = "full"
+def compute_pairwise_agreement(output1: dict, output2: dict) -> dict:
+    """Compare two teacher outputs → agreement info."""
+    if output1 is None or output2 is None:
+        return {"agreement": "error", "detail": "One teacher failed"}
+
+    has1 = output1.get("has_modification", False)
+    has2 = output2.get("has_modification", False)
+
+    if has1 != has2:
+        return {"agreement": "none", "detail": f"has_mod disagree: {has1} vs {has2}"}
+
+    if not has1 and not has2:
+        return {"agreement": "full", "detail": "Both: no modification"}
+
+    aspects1 = {m.get("aspect") for m in output1.get("modifications", [])}
+    aspects2 = {m.get("aspect") for m in output2.get("modifications", [])}
+
+    if aspects1 == aspects2:
+        return {"agreement": "full", "detail": f"Both: {aspects1}"}
+    elif aspects1 & aspects2:
+        return {"agreement": "partial", "detail": f"Overlap: {aspects1 & aspects2}, diff: {aspects1 ^ aspects2}"}
     else:
-        agreement = "partial"
-
-    # Merge: keep modifications from BOTH teachers, deduplicate by aspect+source
-    merged_mods = _merge_modifications(gemini_out.modifications, groq_out.modifications)
-
-    return {
-        "merged": {
-            "modifications": [_mod_to_dict(m) for m in merged_mods],
-            "has_modification": True,
-            "thread_type": gemini_out.thread_type,
-        },
-        "agreement": agreement,
-    }
+        return {"agreement": "none", "detail": f"No overlap: {aspects1} vs {aspects2}"}
 
 
-def _merge_modifications(gemini_mods: List[Modification],
-                         groq_mods: List[Modification]) -> List[Modification]:
+def compute_majority_vote(out1: dict, out2: dict, out3: dict) -> dict:
     """
-    Merge modifications from two teachers.
-    If both found the same aspect from the same source, keep the one with
-    higher confidence and boost it. If one found a mod the other didn't,
-    include it but with a slight confidence penalty.
+    Majority vote across 3 teacher outputs.
+    Returns final_label, vote_method, needs_review, pairwise agreements.
     """
-    merged = {}
+    outputs = [out1, out2, out3]
+    valid = [o for o in outputs if o is not None]
 
-    for mod in gemini_mods:
-        key = (mod.aspect, mod.source_comment)
-        if key not in merged or mod.confidence > merged[key].confidence:
-            merged[key] = Modification(
-                span=mod.span,
-                aspect=mod.aspect,
-                source_comment=mod.source_comment,
-                confidence=mod.confidence,
-            )
-
-    for mod in groq_mods:
-        key = (mod.aspect, mod.source_comment)
-        if key not in merged:
-            # Only Groq found this — include but note lower confidence
-            merged[key] = Modification(
-                span=mod.span,
-                aspect=mod.aspect,
-                source_comment=mod.source_comment,
-                confidence=mod.confidence * 0.9,  # slight penalty for single-teacher
-            )
-        else:
-            # Both found it — boost confidence
-            existing = merged[key]
-            boosted_conf = min(1.0, (existing.confidence + mod.confidence) / 2 + 0.05)
-            # Keep whichever span is longer (more informative)
-            best_span = mod.span if len(mod.span) > len(existing.span) else existing.span
-            merged[key] = Modification(
-                span=best_span,
-                aspect=mod.aspect,
-                source_comment=mod.source_comment,
-                confidence=boosted_conf,
-            )
-
-    return list(merged.values())
-
-
-def _output_to_dict(output: TeacherOutput) -> dict:
-    return {
-        "modifications": [_mod_to_dict(m) for m in output.modifications],
-        "has_modification": output.has_modification,
-        "thread_type": output.thread_type,
-    }
-
-
-def _mod_to_dict(m: Modification) -> dict:
-    return {
-        "span": m.span,
-        "aspect": m.aspect,
-        "source_comment": m.source_comment,
-        "confidence": round(m.confidence, 3),
-    }
-
-
-# =============================================================================
-# SILVER LABEL GENERATOR  (orchestrator)
-# =============================================================================
-
-class SilverLabelGenerator:
-    """
-    Orchestrates one or two teachers to produce silver labels.
-
-    Usage:
-        gen = SilverLabelGenerator(groq_key="...", mode="groq")
-        record = gen.label_thread(thread_dict)
-    """
-
-    def __init__(self, gemini_key: str = None, groq_key: str = None,
-                 mode: str = "groq", groq_model: str = None,
-                 gemini_model: str = None):
-        self.mode = mode
-        self.gemini = None
-        self.groq = None
-
-        if mode in ("gemini", "both"):
-            if not gemini_key:
-                raise ValueError("--gemini-key required for Gemini teacher")
-            self.gemini = GeminiTeacher(api_key=gemini_key, model_name=gemini_model)
-
-        if mode in ("groq", "both"):
-            if not groq_key:
-                raise ValueError("--groq-key required for Groq teacher")
-            self.groq = GroqTeacher(api_key=groq_key, model_name=groq_model)
-
-    def label_thread(self, thread: dict) -> dict:
-        """
-        Label a single thread with configured teacher(s).
-        Returns a full record dict ready for JSONL output.
-        """
-        gemini_result = None
-        groq_result = None
-        teacher_output = None
-        agreement = "single"
-
-        # --- Gemini ---
-        if self.gemini:
-            gemini_result = self.gemini.label(thread)
-            if self.mode == "gemini":
-                time.sleep(self.gemini.MIN_DELAY)
-
-        # --- Groq ---
-        if self.groq:
-            groq_result = self.groq.label(thread)
-            if self.mode == "groq":
-                time.sleep(self.groq.MIN_DELAY)
-
-        # --- Merge / select ---
-        if self.mode == "both" and gemini_result and groq_result:
-            result = compute_agreement(gemini_result, groq_result)
-            teacher_output = result["merged"]
-            agreement = result["agreement"]
-            # Rate limit: respect the slower teacher (Gemini)
-            time.sleep(GeminiTeacher.MIN_DELAY)
-        elif gemini_result and not gemini_result.error:
-            teacher_output = _output_to_dict(gemini_result)
-        elif groq_result and not groq_result.error:
-            teacher_output = _output_to_dict(groq_result)
-
-        # --- Build model name string ---
-        if self.mode == "both":
-            gname = self.gemini.model_name if self.gemini else "gemini"
-            qname = self.groq.model_name if self.groq else "groq"
-            teacher_model = f"{gname}+{qname}"
-        elif self.mode == "gemini":
-            teacher_model = self.gemini.model_name if self.gemini else "gemini"
-        else:
-            teacher_model = self.groq.model_name if self.groq else "groq"
-
-        # --- Build output record ---
-        record = {
-            "thread_id": thread["thread_id"],
-            "video_id": thread["video_id"],
-            "channel_id": thread["channel_id"],
-            "video_title": thread["video_title"],
-            "channel_title": thread["channel_title"],
-            "top_comment_text": thread["top_comment"]["text"],
-            "replies_texts": [r["text"] for r in thread.get("replies", [])],
-            "has_creator_reply": thread.get("has_creator_reply", False),
-            "total_likes": thread.get("total_likes", 0),
-            "teacher_output": teacher_output,
-            "agreement": agreement,
-            "teacher_model": teacher_model,
-            "labeled_at": datetime.now(timezone.utc).isoformat(),
+    if len(valid) < 2:
+        return {
+            "final_label": valid[0] if valid else None,
+            "vote_method": "insufficient",
+            "needs_review": True,
+            "votes": {"has_mod_true": 0, "has_mod_false": 0},
+            "agreement_1v2": "error", "agreement_1v3": "error", "agreement_2v3": "error",
         }
 
-        # Include per-teacher outputs when running both (for analysis)
-        if self.mode == "both":
-            record["gemini_output"] = (
-                _output_to_dict(gemini_result) if gemini_result and not gemini_result.error else None
-            )
-            record["groq_output"] = (
-                _output_to_dict(groq_result) if groq_result and not groq_result.error else None
-            )
+    has_mod_votes = sum(1 for o in valid if o.get("has_modification", False))
+    has_mod_false = len(valid) - has_mod_votes
 
-        return record
+    agr_1v2 = compute_pairwise_agreement(out1, out2)["agreement"] if out1 and out2 else "error"
+    agr_1v3 = compute_pairwise_agreement(out1, out3)["agreement"] if out1 and out3 else "error"
+    agr_2v3 = compute_pairwise_agreement(out2, out3)["agreement"] if out2 and out3 else "error"
+
+    if has_mod_votes >= 2:
+        mod_outputs = [o for o in valid if o.get("has_modification", False)]
+        final = max(mod_outputs, key=lambda o: len(o.get("modifications", [])))
+    elif has_mod_false >= 2:
+        final = {"modifications": [], "has_modification": False, "thread_type": "statement"}
+    else:
+        final = valid[0]
+
+    if has_mod_votes == 3 or has_mod_false == 3:
+        if has_mod_votes == 3:
+            a1 = {m.get("aspect") for m in (out1 or {}).get("modifications", [])}
+            a2 = {m.get("aspect") for m in (out2 or {}).get("modifications", [])}
+            a3 = {m.get("aspect") for m in (out3 or {}).get("modifications", [])}
+            if a1 == a2 == a3:
+                vote_method = "unanimous"
+            else:
+                vote_method = "majority"
+        else:
+            vote_method = "unanimous"
+        needs_review = False
+    elif has_mod_votes == 2 or has_mod_false == 2:
+        vote_method = "majority"
+        needs_review = False
+    else:
+        vote_method = "no_majority"
+        needs_review = True
+
+    return {
+        "final_label": final,
+        "vote_method": vote_method,
+        "needs_review": needs_review,
+        "votes": {"has_mod_true": has_mod_votes, "has_mod_false": has_mod_false},
+        "agreement_1v2": agr_1v2, "agreement_1v3": agr_1v3, "agreement_2v3": agr_2v3,
+    }
 
 
 # =============================================================================
@@ -616,158 +572,160 @@ def load_existing_ids(path: Path) -> set:
     return ids
 
 
+def load_all_records(path: Path) -> List[dict]:
+    records = []
+    if path.exists():
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    return records
+
+
+def write_all_records(records: List[dict], path: Path):
+    with open(path, 'w', encoding='utf-8') as f:
+        for rec in records:
+            f.write(json.dumps(rec, ensure_ascii=False) + '\n')
+
+
+def backup_file(path: Path, suffix: str = ".bak") -> Path:
+    backup_path = path.with_suffix(path.suffix + suffix)
+    shutil.copy2(path, backup_path)
+    return backup_path
+
+
 # =============================================================================
-# OFFLINE AGREEMENT COMPARISON
+# GENERIC PASS RUNNER (used by pass 2 and 3)
 # =============================================================================
 
-def compare_files(groq_file: str, gemini_file: str, output_file: str):
+def run_repass(todo: List[dict], teacher, output_field: str,
+               model_field: str, pass_name: str,
+               record_index: dict, batch_size: int = BATCH_SIZE):
     """
-    Compare two separately-generated label files and produce an agreement report.
-
-    Use this after running Groq on all 5,000 and Gemini on a 500 subset.
-    Matches records by thread_id and computes agreement statistics.
+    Generic batch re-labeling pass for pass 2 and 3.
+    Labels threads and stores results in the specified output_field.
     """
-    # Load Groq labels indexed by thread_id
-    groq_labels = {}
-    with open(groq_file, 'r', encoding='utf-8') as f:
-        for line in f:
-            try:
-                rec = json.loads(line)
-                groq_labels[rec["thread_id"]] = rec.get("teacher_output", {})
-            except (json.JSONDecodeError, KeyError):
-                continue
+    if not todo:
+        print(f"✅ No records need {pass_name}!")
+        return {}
 
-    # Load Gemini labels indexed by thread_id
-    gemini_labels = {}
-    with open(gemini_file, 'r', encoding='utf-8') as f:
-        for line in f:
-            try:
-                rec = json.loads(line)
-                gemini_labels[rec["thread_id"]] = rec.get("teacher_output", {})
-            except (json.JSONDecodeError, KeyError):
-                continue
+    total = len(todo)
+    num_batches = (total + batch_size - 1) // batch_size
+    print(f"\n[{pass_name}] Processing {total} records in ~{num_batches} batches of {batch_size}")
+    print(f"  Teacher: {teacher.model_name}")
+    print(f"  Storing in: {output_field}\n")
 
-    # Find overlapping thread IDs
-    common_ids = set(groq_labels.keys()) & set(gemini_labels.keys())
-    print(f"Groq labels:   {len(groq_labels)}")
-    print(f"Gemini labels: {len(gemini_labels)}")
-    print(f"Overlapping:   {len(common_ids)}")
-
-    if not common_ids:
-        print("No overlapping thread IDs found. Cannot compare.")
-        return
-
-    # Compare
     stats = {
-        "total_compared": len(common_ids),
-        "has_mod_agree": 0,
-        "has_mod_disagree": 0,
-        "both_no_mod": 0,
-        "both_has_mod": 0,
-        "aspect_full_agree": 0,
-        "aspect_partial_agree": 0,
-        "aspect_disagree": 0,
-        "examples": {
-            "full_agreement": [],
-            "disagreement": [],
-        },
+        "total": 0, "success": 0, "batch_errors": 0, "parse_failures": 0,
+        "with_mods": 0, "no_mods": 0,
+        "started_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    for tid in sorted(common_ids):
-        g_out = groq_labels[tid]
-        m_out = gemini_labels[tid]
+    consecutive_errors = 0
+    idx = 0
+    batch_num = 0
 
-        g_has = g_out.get("has_modification", False) if g_out else False
-        m_has = m_out.get("has_modification", False) if m_out else False
+    while idx < total:
+        batch_num += 1
+        batch = todo[idx:idx + batch_size]
 
-        if g_has == m_has:
-            stats["has_mod_agree"] += 1
-            if not g_has:
-                stats["both_no_mod"] += 1
-            else:
-                stats["both_has_mod"] += 1
-                # Compare aspects
-                g_aspects = {m.get("aspect") for m in g_out.get("modifications", [])}
-                m_aspects = {m.get("aspect") for m in m_out.get("modifications", [])}
-                if g_aspects == m_aspects:
-                    stats["aspect_full_agree"] += 1
-                    if len(stats["examples"]["full_agreement"]) < 5:
-                        stats["examples"]["full_agreement"].append({
-                            "thread_id": tid,
-                            "groq": g_out,
-                            "gemini": m_out,
-                        })
-                elif g_aspects & m_aspects:
-                    stats["aspect_partial_agree"] += 1
-                else:
-                    stats["aspect_disagree"] += 1
+        results, error, is_rl = teacher.label_batch(batch)
+
+        if error or results is None:
+            stats["batch_errors"] += 1
+            consecutive_errors += 1
+            print(f"  [Batch {batch_num}] ERROR: {(error or 'No results')[:100]}")
+            if consecutive_errors >= 5:
+                print(f"\n  ❌ 5 consecutive batch errors — stopping {pass_name}.")
+                break
+            idx += batch_size
+            time.sleep(2)
+            continue
         else:
-            stats["has_mod_disagree"] += 1
-            if len(stats["examples"]["disagreement"]) < 5:
-                stats["examples"]["disagreement"].append({
-                    "thread_id": tid,
-                    "groq": g_out,
-                    "gemini": m_out,
-                })
+            consecutive_errors = 0
 
-    # Compute rates
-    total = stats["total_compared"]
-    stats["has_mod_agreement_rate"] = round(stats["has_mod_agree"] / total, 3)
-    if stats["both_has_mod"] > 0:
-        stats["aspect_agreement_rate"] = round(
-            stats["aspect_full_agree"] / stats["both_has_mod"], 3
-        )
-    else:
-        stats["aspect_agreement_rate"] = None
+        batch_ok = 0
+        batch_fail = 0
 
-    # Save
-    output_path = Path(output_file)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(stats, f, indent=2, ensure_ascii=False)
+        for rec in batch:
+            tid = rec["thread_id"]
+            output = results.get(tid)
+            stats["total"] += 1
 
-    # Print summary
-    print(f"\n{'='*60}")
-    print(f"TEACHER AGREEMENT REPORT")
-    print(f"{'='*60}")
-    print(f"Threads compared:          {total}")
-    print(f"has_modification agree:     {stats['has_mod_agree']}/{total} "
-          f"({stats['has_mod_agreement_rate']*100:.1f}%)")
-    print(f"  Both no modification:    {stats['both_no_mod']}")
-    print(f"  Both has modification:   {stats['both_has_mod']}")
-    print(f"  Disagree:                {stats['has_mod_disagree']}")
-    if stats["both_has_mod"] > 0:
-        print(f"Aspect agreement (when both found mods):")
-        print(f"  Full match:              {stats['aspect_full_agree']}/{stats['both_has_mod']} "
-              f"({stats['aspect_agreement_rate']*100:.1f}%)")
-        print(f"  Partial overlap:         {stats['aspect_partial_agree']}")
-        print(f"  No overlap:              {stats['aspect_disagree']}")
-    print(f"\nSaved to: {output_path}")
-    print(f"{'='*60}")
+            if output is None:
+                stats["parse_failures"] += 1
+                batch_fail += 1
+                continue
+
+            if tid in record_index:
+                record_index[tid][output_field] = output
+                record_index[tid][model_field] = teacher.model_name
+
+            if output.get("has_modification"):
+                stats["with_mods"] += 1
+            else:
+                stats["no_mods"] += 1
+
+            stats["success"] += 1
+            batch_ok += 1
+
+        done = min(idx + batch_size, total)
+        pct = stats["with_mods"] / stats["total"] * 100 if stats["total"] else 0
+        print(f"  [Batch {batch_num}: {done}/{total}] "
+              f"+{batch_ok} ok, {batch_fail} fail | "
+              f"mods={stats['with_mods']} ({pct:.0f}%) "
+              f"errs={stats['batch_errors']}")
+
+        idx += batch_size
+        time.sleep(teacher.MIN_DELAY)
+
+    stats["finished_at"] = datetime.now(timezone.utc).isoformat()
+    return stats
 
 
 # =============================================================================
-# MAIN PROCESSING LOOP
+# PASS 1: INITIAL LABELING
 # =============================================================================
 
-def process_file(input_path: str, output_path: str,
-                 gemini_key: str = None, groq_key: str = None,
-                 mode: str = "groq", groq_model: str = None,
-                 gemini_model: str = None,
-                 limit: int = None, skip_existing: bool = True):
-    """Main processing loop — labels threads and writes JSONL output."""
+def run_pass1(input_path: str, output_path: str,
+              gemini_key: str = None, groq_key: str = None,
+              gemini_model: str = None, groq_model: str = None,
+              limit: int = None, skip_existing: bool = True,
+              batch_size: int = BATCH_SIZE):
+    """Pass 1: Label threads with Gemini (primary) + Groq (fallback)."""
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Resume support
+    gemini = None
+    groq = None
+
+    if gemini_key and GEMINI_AVAILABLE:
+        try:
+            gemini = GeminiTeacher(api_key=gemini_key, model_name=gemini_model, temperature=0.1)
+            print(f"✓ Gemini ready: {gemini.model_name} (temp={gemini.temperature})")
+        except Exception as e:
+            print(f"⚠ Gemini init failed: {e}")
+
+    if groq_key and GROQ_AVAILABLE:
+        try:
+            groq = GroqTeacher(api_key=groq_key, model_name=groq_model)
+            print(f"✓ Groq ready:   {groq.model_name}")
+        except Exception as e:
+            print(f"⚠ Groq init failed: {e}")
+
+    if not gemini and not groq:
+        print("❌ No teacher available! Set GOOGLE_API_KEY and/or GROQ_API_KEY in .env")
+        return
+
     existing_ids = set()
     if skip_existing:
         existing_ids = load_existing_ids(output_path)
         if existing_ids:
             print(f"Resuming: {len(existing_ids)} already labeled, will skip")
 
-    # Load threads
     threads = []
     with open(input_path, 'r', encoding='utf-8') as f:
         for line in f:
@@ -782,110 +740,453 @@ def process_file(input_path: str, output_path: str,
         threads = threads[:limit]
 
     if not threads:
-        print("No new threads to process.")
+        print("✅ No new threads to process. Pass 1 complete!")
         return
 
-    # Initialize generator
-    generator = SilverLabelGenerator(
-        gemini_key=gemini_key,
-        groq_key=groq_key,
-        mode=mode,
-        groq_model=groq_model,
-        gemini_model=gemini_model,
-    )
+    total_threads = len(threads)
+    num_batches = (total_threads + batch_size - 1) // batch_size
+    print(f"\n[PASS 1] Processing {total_threads} threads in ~{num_batches} batches of {batch_size}")
+    print(f"Output: {output_path}\n")
 
-    # Estimate time
-    if mode == "both":
-        delay = GeminiTeacher.MIN_DELAY   # bottleneck is Gemini
-    elif mode == "gemini":
-        delay = GeminiTeacher.MIN_DELAY
-    else:
-        delay = GroqTeacher.MIN_DELAY
-    est_minutes = (len(threads) * delay) / 60
-    print(f"Processing {len(threads)} threads with teacher={mode}")
-    if mode == "gemini":
-        teacher_name = gemini_model or GeminiTeacher.NAME
-    elif mode == "groq":
-        teacher_name = groq_model or GroqTeacher.NAME
-    else:
-        teacher_name = f"{gemini_model or GeminiTeacher.NAME} + {groq_model or GroqTeacher.NAME}"
-    print(f"Model(s): {teacher_name}")
-    print(f"Estimated time: ~{est_minutes:.0f} minutes ({delay}s per thread)")
-    print(f"Output: {output_path}")
-    print()
+    using_gemini = gemini is not None
+    gemini_switched = False
+    consecutive_errors = 0
 
-    # Stats
     stats = {
-        "total": 0,
-        "with_mods": 0,
-        "no_mods": 0,
-        "errors": 0,
-        "agreement": {"full": 0, "partial": 0, "none": 0,
-                       "single": 0, "gemini_only": 0, "groq_only": 0, "both_error": 0},
+        "total": 0, "with_mods": 0, "no_mods": 0,
+        "gemini_labeled": 0, "groq_labeled": 0,
+        "batch_errors": 0, "parse_failures": 0,
         "aspects": {"SUBSTITUTION": 0, "QUANTITY": 0, "TECHNIQUE": 0, "ADDITION": 0},
-        "mode": mode,
-        "teacher_model": teacher_name,
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    for i, thread in enumerate(threads):
-        record = generator.label_thread(thread)
-        stats["total"] += 1
+    thread_idx = 0
+    batch_num = 0
 
-        # Track agreement
-        agr = record.get("agreement", "single")
-        if agr in stats["agreement"]:
-            stats["agreement"][agr] += 1
+    while thread_idx < total_threads:
+        batch_num += 1
+        batch = threads[thread_idx:thread_idx + batch_size]
 
-        # Track content
-        teacher_out = record.get("teacher_output")
-        if teacher_out is None:
-            stats["errors"] += 1
-            print(f"  [{i+1}/{len(threads)}] ERROR: {thread['thread_id']}")
-        elif teacher_out.get("has_modification"):
-            stats["with_mods"] += 1
-            for mod in teacher_out.get("modifications", []):
-                aspect = mod.get("aspect", "")
-                if aspect in stats["aspects"]:
-                    stats["aspects"][aspect] += 1
+        if using_gemini:
+            teacher = gemini
+            teacher_name = gemini.model_name
+            delay = GeminiTeacher.MIN_DELAY
         else:
-            stats["no_mods"] += 1
+            teacher = groq
+            teacher_name = groq.model_name
+            delay = GroqTeacher.MIN_DELAY
 
-        # Save record
-        append_jsonl(record, output_path)
+        results, error, is_rl = teacher.label_batch(batch)
 
-        # Progress
-        if (i + 1) % 25 == 0 or (i + 1) == len(threads):
-            pct_mod = stats["with_mods"] / stats["total"] * 100 if stats["total"] else 0
-            msg = (f"  [{i+1}/{len(threads)}] "
-                   f"mods={stats['with_mods']} ({pct_mod:.0f}%) "
-                   f"errors={stats['errors']}")
-            if mode == "both":
-                msg += (f" agree: full={stats['agreement']['full']} "
-                        f"partial={stats['agreement']['partial']} "
-                        f"none={stats['agreement']['none']}")
-            print(msg)
+        if error and is_rl and using_gemini and groq:
+            print(f"\n  ⚡ Gemini rate limit at batch {batch_num}. Switching to Groq...")
+            print(f"     Gemini labeled: {stats['gemini_labeled']} threads this run")
+            using_gemini = False
+            gemini_switched = True
+            teacher = groq
+            teacher_name = groq.model_name
+            delay = GroqTeacher.MIN_DELAY
+            results, error, is_rl = teacher.label_batch(batch)
 
-    # Finalize stats
+        if error or results is None:
+            stats["batch_errors"] += 1
+            consecutive_errors += 1
+            print(f"  [Batch {batch_num}] ERROR: {(error or 'No results')[:100]}")
+            if consecutive_errors >= 5:
+                print(f"\n  ❌ 5 consecutive batch errors — stopping.")
+                break
+            thread_idx += batch_size
+            time.sleep(2)
+            continue
+        else:
+            consecutive_errors = 0
+
+        batch_success = 0
+        batch_fail = 0
+
+        for thread in batch:
+            tid = thread["thread_id"]
+            teacher_output = results.get(tid)
+            stats["total"] += 1
+
+            if teacher_output is None:
+                stats["parse_failures"] += 1
+                batch_fail += 1
+                continue
+
+            if teacher_output["has_modification"]:
+                stats["with_mods"] += 1
+                for mod in teacher_output["modifications"]:
+                    a = mod.get("aspect", "")
+                    if a in stats["aspects"]:
+                        stats["aspects"][a] += 1
+            else:
+                stats["no_mods"] += 1
+
+            if using_gemini:
+                stats["gemini_labeled"] += 1
+            else:
+                stats["groq_labeled"] += 1
+
+            record = {
+                "thread_id": thread["thread_id"],
+                "video_id": thread["video_id"],
+                "channel_id": thread["channel_id"],
+                "video_title": thread["video_title"],
+                "channel_title": thread["channel_title"],
+                "top_comment_text": thread["top_comment"]["text"],
+                "replies_texts": [r["text"] for r in thread.get("replies", [])],
+                "has_creator_reply": thread.get("has_creator_reply", False),
+                "total_likes": thread.get("total_likes", 0),
+                "teacher_output": teacher_output,
+                "teacher_model": teacher_name,
+                "labeled_at": datetime.now(timezone.utc).isoformat(),
+                "second_teacher_output": None,
+                "second_teacher_model": None,
+                "third_teacher_output": None,
+                "third_teacher_model": None,
+                "agreement_1v2": None,
+                "agreement_1v3": None,
+                "agreement_2v3": None,
+                "final_label": None,
+                "vote_method": None,
+                "needs_review": None,
+            }
+
+            append_jsonl(record, output_path)
+            batch_success += 1
+
+        done = min(thread_idx + batch_size, total_threads)
+        pct = stats["with_mods"] / stats["total"] * 100 if stats["total"] else 0
+        tag = "Gemini" if using_gemini else "Groq"
+        print(f"  [Batch {batch_num}: {done}/{total_threads}] ({tag}) "
+              f"+{batch_success} ok, {batch_fail} fail | "
+              f"mods={stats['with_mods']} ({pct:.0f}%) errs={stats['batch_errors']}")
+
+        thread_idx += batch_size
+        time.sleep(delay)
+
     stats["finished_at"] = datetime.now(timezone.utc).isoformat()
-    stats_path = output_path.parent / "generation_stats.json"
-    with open(stats_path, 'w', encoding='utf-8') as f:
+    stats["total_in_output"] = len(existing_ids) + stats["total"] - stats["parse_failures"]
+    stats_path = Path(output_path).parent / "pass1_stats.json"
+    with open(stats_path, 'w') as f:
         json.dump(stats, f, indent=2, ensure_ascii=False)
 
-    # Summary
     print(f"\n{'='*60}")
-    print(f"✅ Done: {stats['total']} threads processed")
-    print(f"   With modifications: {stats['with_mods']} "
-          f"({stats['with_mods']/max(1,stats['total'])*100:.1f}%)")
-    print(f"   No modifications:   {stats['no_mods']}")
-    print(f"   Errors:             {stats['errors']}")
-    print(f"   Aspects: {stats['aspects']}")
-    if mode == "both":
-        print(f"   Agreement: full={stats['agreement']['full']}, "
-              f"partial={stats['agreement']['partial']}, "
-              f"none={stats['agreement']['none']}")
-    print(f"   Output: {output_path}")
-    print(f"   Stats:  {stats_path}")
+    print(f"  ✅ Pass 1 Done!")
+    print(f"{'='*60}")
+    print(f"  Processed:         {stats['total']} threads")
+    print(f"    Gemini labeled:  {stats['gemini_labeled']}")
+    print(f"    Groq labeled:    {stats['groq_labeled']}")
+    print(f"    With mods:       {stats['with_mods']}")
+    print(f"    No mods:         {stats['no_mods']}")
+    print(f"    Parse failures:  {stats['parse_failures']}")
+    print(f"  Aspects: {stats['aspects']}")
+    print(f"  Total in output:   ~{stats['total_in_output']}")
+    print(f"  Output: {output_path}")
+    if gemini_switched:
+        print(f"  ⚡ Switched from Gemini to Groq mid-run (rate limit)")
+    print(f"\n  Next step: run --second-pass")
+    print(f"{'='*60}")
+
+
+# =============================================================================
+# PASS 2: INTRA-ANNOTATOR (same Gemini, temp=0.3)
+# =============================================================================
+
+def run_pass2(output_path: str,
+              gemini_key: str = None, groq_key: str = None,
+              gemini_model: str = None, groq_model: str = None,
+              limit: int = None, batch_size: int = BATCH_SIZE):
+    """Pass 2: Re-label with same Gemini at temperature=0.3."""
+
+    output_path = Path(output_path)
+    if not output_path.exists():
+        print(f"❌ {output_path} not found. Run pass 1 first.")
+        return
+
+    if not gemini_key:
+        print("❌ GOOGLE_API_KEY required for pass 2")
+        return
+
+    gemini = GeminiTeacher(api_key=gemini_key, model_name=gemini_model, temperature=0.3)
+    print(f"✓ Gemini ready: {gemini.model_name} (temp={gemini.temperature})")
+
+    records = load_all_records(output_path)
+    print(f"Loaded {len(records)} records from {output_path}")
+
+    todo = [r for r in records if r.get("second_teacher_output") is None]
+    if limit:
+        todo = todo[:limit]
+
+    if not todo:
+        print("✅ All records already have pass 2 labels!")
+        return
+
+    record_index = {r["thread_id"]: r for r in records}
+
+    stats = run_repass(todo, gemini, "second_teacher_output", "second_teacher_model",
+                       "PASS 2 — Intra-annotator", record_index, batch_size)
+
+    # Compute pairwise agreement
+    agreement_counts = {"full": 0, "partial": 0, "none": 0, "error": 0}
+    for rec in records:
+        if rec.get("second_teacher_output") is not None:
+            agr = compute_pairwise_agreement(rec.get("teacher_output"), rec.get("second_teacher_output"))
+            rec["agreement_1v2"] = agr["agreement"]
+            if agr["agreement"] in agreement_counts:
+                agreement_counts[agr["agreement"]] += 1
+
+    backup_file(output_path, ".pre_pass2.bak")
+    write_all_records(records, output_path)
+
+    stats_path = output_path.parent / "pass2_stats.json"
+    stats["agreement"] = agreement_counts
+    with open(stats_path, 'w') as f:
+        json.dump(stats, f, indent=2, ensure_ascii=False)
+
+    print(f"\n{'='*60}")
+    print(f"  ✅ Pass 2 Done!")
+    print(f"{'='*60}")
+    print(f"  Re-labeled:        {stats.get('success', 0)} threads")
+    print(f"    With mods:       {stats.get('with_mods', 0)}")
+    print(f"    No mods:         {stats.get('no_mods', 0)}")
+    print(f"    Parse failures:  {stats.get('parse_failures', 0)}")
+    print(f"  Agreement (pass1 vs pass2):")
+    for level, count in agreement_counts.items():
+        pct = count / max(1, sum(agreement_counts.values())) * 100
+        print(f"    {level:10s}  {count:5d}  ({pct:.1f}%)")
+    print(f"\n  Next step: run --third-pass")
+    print(f"{'='*60}")
+
+
+# =============================================================================
+# PASS 3: INTER-ANNOTATOR (Cerebras Qwen 235B)
+# =============================================================================
+
+def run_pass3(output_path: str,
+              cerebras_key: str = None, cerebras_model: str = None,
+              limit: int = None, batch_size: int = BATCH_SIZE):
+    """Pass 3: Re-label with Cerebras Qwen 235B (different model family)."""
+
+    output_path = Path(output_path)
+    if not output_path.exists():
+        print(f"❌ {output_path} not found. Run pass 1 first.")
+        return
+
+    if not cerebras_key:
+        print("❌ CEREBRAS_API_KEY required for pass 3")
+        return
+
+    cerebras = CerebrasTeacher(api_key=cerebras_key, model_name=cerebras_model)
+    print(f"✓ Cerebras ready: {cerebras.model_name}")
+
+    records = load_all_records(output_path)
+    print(f"Loaded {len(records)} records from {output_path}")
+
+    todo = [r for r in records if r.get("third_teacher_output") is None]
+    if limit:
+        todo = todo[:limit]
+
+    if not todo:
+        print("✅ All records already have pass 3 labels!")
+        return
+
+    record_index = {r["thread_id"]: r for r in records}
+
+    stats = run_repass(todo, cerebras, "third_teacher_output", "third_teacher_model",
+                       "PASS 3 — Inter-annotator", record_index, batch_size)
+
+    # Compute pairwise agreements
+    agr_1v3 = {"full": 0, "partial": 0, "none": 0, "error": 0}
+    agr_2v3 = {"full": 0, "partial": 0, "none": 0, "error": 0}
+    for rec in records:
+        if rec.get("third_teacher_output") is not None:
+            a13 = compute_pairwise_agreement(rec.get("teacher_output"), rec.get("third_teacher_output"))
+            rec["agreement_1v3"] = a13["agreement"]
+            if a13["agreement"] in agr_1v3:
+                agr_1v3[a13["agreement"]] += 1
+
+            if rec.get("second_teacher_output") is not None:
+                a23 = compute_pairwise_agreement(rec.get("second_teacher_output"), rec.get("third_teacher_output"))
+                rec["agreement_2v3"] = a23["agreement"]
+                if a23["agreement"] in agr_2v3:
+                    agr_2v3[a23["agreement"]] += 1
+
+    backup_file(output_path, ".pre_pass3.bak")
+    write_all_records(records, output_path)
+
+    stats_path = output_path.parent / "pass3_stats.json"
+    stats["agreement_1v3"] = agr_1v3
+    stats["agreement_2v3"] = agr_2v3
+    with open(stats_path, 'w') as f:
+        json.dump(stats, f, indent=2, ensure_ascii=False)
+
+    print(f"\n{'='*60}")
+    print(f"  ✅ Pass 3 Done!")
+    print(f"{'='*60}")
+    print(f"  Labeled:           {stats.get('success', 0)} threads")
+    print(f"    With mods:       {stats.get('with_mods', 0)}")
+    print(f"    No mods:         {stats.get('no_mods', 0)}")
+    print(f"    Parse failures:  {stats.get('parse_failures', 0)}")
+    print(f"  Agreement (pass1 vs pass3 — inter-annotator):")
+    for level, count in agr_1v3.items():
+        pct = count / max(1, sum(agr_1v3.values())) * 100
+        print(f"    {level:10s}  {count:5d}  ({pct:.1f}%)")
+    print(f"  Agreement (pass2 vs pass3):")
+    for level, count in agr_2v3.items():
+        pct = count / max(1, sum(agr_2v3.values())) * 100
+        print(f"    {level:10s}  {count:5d}  ({pct:.1f}%)")
+    print(f"\n  Next step: run --finalize to compute majority vote")
+    print(f"{'='*60}")
+
+
+# =============================================================================
+# FINALIZE: MAJORITY VOTE
+# =============================================================================
+
+def run_finalize(output_path: str):
+    """Compute majority vote across all 3 passes and set final labels."""
+
+    output_path = Path(output_path)
+    records = load_all_records(output_path)
+    print(f"Loaded {len(records)} records")
+
+    vote_stats = {"unanimous": 0, "majority": 0, "no_majority": 0, "insufficient": 0}
+    review_count = 0
+    final_mods = 0
+    final_no_mods = 0
+
+    for rec in records:
+        out1 = rec.get("teacher_output")
+        out2 = rec.get("second_teacher_output")
+        out3 = rec.get("third_teacher_output")
+
+        vote = compute_majority_vote(out1, out2, out3)
+
+        rec["final_label"] = vote["final_label"]
+        rec["vote_method"] = vote["vote_method"]
+        rec["needs_review"] = vote["needs_review"]
+        rec["agreement_1v2"] = vote["agreement_1v2"]
+        rec["agreement_1v3"] = vote["agreement_1v3"]
+        rec["agreement_2v3"] = vote["agreement_2v3"]
+
+        if vote["vote_method"] in vote_stats:
+            vote_stats[vote["vote_method"]] += 1
+        if vote["needs_review"]:
+            review_count += 1
+        if vote.get("final_label", {}).get("has_modification"):
+            final_mods += 1
+        else:
+            final_no_mods += 1
+
+    backup_file(output_path, ".pre_finalize.bak")
+    write_all_records(records, output_path)
+
+    stats = {"total": len(records), "vote_stats": vote_stats,
+             "needs_review": review_count, "final_mods": final_mods, "final_no_mods": final_no_mods}
+    stats_path = output_path.parent / "final_stats.json"
+    with open(stats_path, 'w') as f:
+        json.dump(stats, f, indent=2, ensure_ascii=False)
+
+    total = len(records)
+    print(f"\n{'='*60}")
+    print(f"  ✅ Finalized — Majority Vote Complete!")
+    print(f"{'='*60}")
+    print(f"  Total records:     {total}")
+    print(f"  Vote results:")
+    for method, count in vote_stats.items():
+        pct = count / max(1, total) * 100
+        print(f"    {method:15s}  {count:5d}  ({pct:.1f}%)")
+    print(f"  Final labels:")
+    print(f"    With modification: {final_mods} ({final_mods/max(1,total)*100:.1f}%)")
+    print(f"    No modification:   {final_no_mods} ({final_no_mods/max(1,total)*100:.1f}%)")
+    print(f"  Needs manual review: {review_count}")
+    print(f"  Output: {output_path}")
+    print(f"{'='*60}")
+
+
+# =============================================================================
+# EXPORT REVIEW + AGREEMENT STATS
+# =============================================================================
+
+def export_review(output_path: str, review_path: str = REVIEW_OUTPUT):
+    """Export records that need manual review."""
+    records = load_all_records(Path(output_path))
+    review_records = [r for r in records if r.get("needs_review")]
+
+    if not review_records:
+        print("✅ No records need review! All annotators agree.")
+        return
+
+    review_path = Path(review_path)
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    write_all_records(review_records, review_path)
+
+    print(f"\n{'='*60}")
+    print(f"  REVIEW EXPORT")
+    print(f"{'='*60}")
+    print(f"  Total needing review: {len(review_records)}")
+    print(f"  Exported to: {review_path}")
+    print(f"{'='*60}")
+
+
+def show_agreement_stats(output_path: str):
+    """Show comprehensive agreement statistics."""
+    records = load_all_records(Path(output_path))
+    total = len(records)
+
+    has_p2 = sum(1 for r in records if r.get("second_teacher_output") is not None)
+    has_p3 = sum(1 for r in records if r.get("third_teacher_output") is not None)
+    has_final = sum(1 for r in records if r.get("final_label") is not None)
+
+    print(f"\n{'='*60}")
+    print(f"  AGREEMENT STATISTICS")
+    print(f"{'='*60}")
+    print(f"  Total records:     {total}")
+    print(f"  Pass 2 done:       {has_p2}")
+    print(f"  Pass 3 done:       {has_p3}")
+    print(f"  Finalized:         {has_final}")
+
+    for pair, field_name in [("Pass1 vs Pass2", "agreement_1v2"),
+                             ("Pass1 vs Pass3", "agreement_1v3"),
+                             ("Pass2 vs Pass3", "agreement_2v3")]:
+        counts = {"full": 0, "partial": 0, "none": 0, "error": 0}
+        counted = 0
+        for r in records:
+            val = r.get(field_name)
+            if val and val in counts:
+                counts[val] += 1
+                counted += 1
+        if counted > 0:
+            print(f"\n  {pair} ({counted} records):")
+            for level, count in counts.items():
+                pct = count / max(1, counted) * 100
+                print(f"    {level:10s}  {count:5d}  ({pct:.1f}%)")
+
+    if has_final > 0:
+        vote_counts = {}
+        review_count = 0
+        for r in records:
+            vm = r.get("vote_method")
+            if vm:
+                vote_counts[vm] = vote_counts.get(vm, 0) + 1
+            if r.get("needs_review"):
+                review_count += 1
+        print(f"\n  Majority vote ({has_final} records):")
+        for method, count in sorted(vote_counts.items()):
+            pct = count / max(1, has_final) * 100
+            print(f"    {method:15s}  {count:5d}  ({pct:.1f}%)")
+        print(f"  Needs manual review: {review_count}")
+
+    model_counts = {}
+    for r in records:
+        m = r.get("teacher_model", "unknown")
+        model_counts[m] = model_counts.get(m, 0) + 1
+    print(f"\n  Pass 1 model distribution:")
+    for model, count in sorted(model_counts.items()):
+        print(f"    {model}: {count}")
+
     print(f"{'='*60}")
 
 
@@ -895,91 +1196,119 @@ def process_file(input_path: str, output_path: str,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Dual-Teacher Silver Label Generator (Gemini + Groq)",
+        description="Three-Pass Silver Label Generator with Majority Vote",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
-  # Label all 5,000 threads with Groq (primary — ~3 hours)
-  python -m src.teacher_labeling.generate_labels \\
-      -i data/raw_youtube/threads.jsonl \\
-      --groq-key KEY --teacher groq
+Workflow:
+  1. Pass 1 — Gemini labels all threads:
+     python -m src.teacher_labeling.generate_labels \\
+         -i data/raw_youtube/threads.jsonl --limit 5000 --batch-size 20
 
-  # Label 500-thread subset with Gemini (agreement analysis — 1 day)
-  python -m src.teacher_labeling.generate_labels \\
-      -i data/raw_youtube/threads.jsonl \\
-      --gemini-key KEY --teacher gemini --limit 500 \\
-      -o data/silver_labels/gemini_subset.jsonl
+  2. Pass 2 — Same Gemini, temp=0.3 (intra-annotator):
+     python -m src.teacher_labeling.generate_labels --second-pass --limit 5000 --batch-size 20
 
-  # Compare the two runs offline
-  python -m src.teacher_labeling.generate_labels \\
-      --compare \\
-      --groq-file data/silver_labels/teacher_output.jsonl \\
-      --gemini-file data/silver_labels/gemini_subset.jsonl \\
-      -o data/silver_labels/agreement_report.json
+  3. Pass 3 — Cerebras Qwen 235B (inter-annotator):
+     python -m src.teacher_labeling.generate_labels --third-pass --limit 5000 --batch-size 20
 
-  # Both teachers on a small test batch
-  python -m src.teacher_labeling.generate_labels \\
-      -i data/raw_youtube/threads.jsonl \\
-      --gemini-key KEY1 --groq-key KEY2 \\
-      --teacher both --limit 20
+  4. Finalize — Majority vote, flag disagreements:
+     python -m src.teacher_labeling.generate_labels --finalize
 
-  # Test with 5 threads first
-  python -m src.teacher_labeling.generate_labels \\
-      -i data/raw_youtube/threads.jsonl \\
-      --groq-key KEY --teacher groq --limit 5
+  5. Export disagreements for manual review:
+     python -m src.teacher_labeling.generate_labels --export-review
+
+  6. View agreement stats:
+     python -m src.teacher_labeling.generate_labels --agreement-stats
         """,
     )
 
-    # Main mode: label threads
-    parser.add_argument("--input", "-i", help="Input threads JSONL file")
-    parser.add_argument("--output", "-o", default="data/silver_labels/teacher_output.jsonl",
-                        help="Output JSONL path (default: data/silver_labels/teacher_output.jsonl)")
-    parser.add_argument("--gemini-key", help="Google AI Studio API key (for Gemini)")
-    parser.add_argument("--groq-key", help="Groq API key (for Llama 3.3 70B)")
-    parser.add_argument("--teacher", choices=["gemini", "groq", "both"], default="groq",
-                        help="Which teacher(s) to use (default: groq)")
-    parser.add_argument("--groq-model", default="llama-3.3-70b-versatile",
-                        help="Groq model name (default: llama-3.3-70b-versatile)")
-    parser.add_argument("--gemini-model", default="gemini-3.1-flash-lite-preview",
-                        help="Gemini model name (default: gemini-3.1-flash-lite)")
-    parser.add_argument("--limit", type=int, help="Max threads to process (for testing)")
-    parser.add_argument("--no-skip", action="store_true",
-                        help="Don't skip already-labeled threads (re-process all)")
+    parser.add_argument("--second-pass", action="store_true",
+                        help="Pass 2: same Gemini, temp=0.3 (intra-annotator)")
+    parser.add_argument("--third-pass", action="store_true",
+                        help="Pass 3: Cerebras Qwen 235B (inter-annotator)")
+    parser.add_argument("--finalize", action="store_true",
+                        help="Compute majority vote and set final labels")
+    parser.add_argument("--export-review", action="store_true",
+                        help="Export disagreements to needs_review.jsonl")
+    parser.add_argument("--agreement-stats", action="store_true",
+                        help="Show agreement statistics")
 
-    # Comparison mode: compare two label files offline
-    parser.add_argument("--compare", action="store_true",
-                        help="Compare two label files for agreement (offline mode)")
-    parser.add_argument("--groq-file", help="Groq labels JSONL (for --compare)")
-    parser.add_argument("--gemini-file", help="Gemini labels JSONL (for --compare)")
+    parser.add_argument("--input", "-i", help="Input threads JSONL (pass 1)")
+    parser.add_argument("--output", "-o", default=DEFAULT_OUTPUT,
+                        help=f"Output JSONL path (default: {DEFAULT_OUTPUT})")
+    parser.add_argument("--gemini-key", default=os.environ.get("GOOGLE_API_KEY"),
+                        help="Gemini API key (default: GOOGLE_API_KEY env var)")
+    parser.add_argument("--groq-key", default=os.environ.get("GROQ_API_KEY"),
+                        help="Groq API key (default: GROQ_API_KEY env var)")
+    parser.add_argument("--cerebras-key", default=os.environ.get("CEREBRAS_API_KEY"),
+                        help="Cerebras API key (default: CEREBRAS_API_KEY env var)")
+    parser.add_argument("--gemini-model", default=None,
+                        help=f"Gemini model (default: {GeminiTeacher.NAME})")
+    parser.add_argument("--groq-model", default=None,
+                        help=f"Groq model (default: {GroqTeacher.NAME})")
+    parser.add_argument("--cerebras-model", default=None,
+                        help=f"Cerebras model (default: {CerebrasTeacher.NAME})")
+    parser.add_argument("--limit", type=int, help="Max threads to process per run")
+    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE,
+                        help=f"Threads per API call (default: {BATCH_SIZE})")
+    parser.add_argument("--no-skip", action="store_true",
+                        help="Pass 1: don't skip already-labeled threads")
 
     args = parser.parse_args()
 
-    # --- Comparison mode ---
-    if args.compare:
-        if not args.groq_file or not args.gemini_file:
-            parser.error("--compare requires --groq-file and --gemini-file")
-        compare_files(args.groq_file, args.gemini_file, args.output)
+    if args.export_review:
+        export_review(args.output)
         return
 
-    # --- Labeling mode ---
+    if args.agreement_stats:
+        show_agreement_stats(args.output)
+        return
+
+    if args.finalize:
+        run_finalize(args.output)
+        return
+
+    if args.third_pass:
+        run_pass3(
+            output_path=args.output,
+            cerebras_key=args.cerebras_key,
+            cerebras_model=args.cerebras_model,
+            limit=args.limit,
+            batch_size=args.batch_size,
+        )
+        return
+
+    if args.second_pass:
+        run_pass2(
+            output_path=args.output,
+            gemini_key=args.gemini_key,
+            groq_key=args.groq_key,
+            gemini_model=args.gemini_model,
+            groq_model=args.groq_model,
+            limit=args.limit,
+            batch_size=args.batch_size,
+        )
+        return
+
     if not args.input:
-        parser.error("--input is required for labeling mode")
+        parser.error("--input / -i is required for pass 1 labeling")
 
-    if args.teacher in ("gemini", "both") and not args.gemini_key:
-        parser.error("--gemini-key is required when --teacher is 'gemini' or 'both'")
-    if args.teacher in ("groq", "both") and not args.groq_key:
-        parser.error("--groq-key is required when --teacher is 'groq' or 'both'")
+    if not args.gemini_key and not args.groq_key:
+        parser.error(
+            "No API keys found!\n"
+            "Set GOOGLE_API_KEY and/or GROQ_API_KEY in .env,\n"
+            "or pass --gemini-key / --groq-key."
+        )
 
-    process_file(
+    run_pass1(
         input_path=args.input,
         output_path=args.output,
         gemini_key=args.gemini_key,
         groq_key=args.groq_key,
-        mode=args.teacher,
-        groq_model=args.groq_model,
         gemini_model=args.gemini_model,
+        groq_model=args.groq_model,
         limit=args.limit,
         skip_existing=not args.no_skip,
+        batch_size=args.batch_size,
     )
 
 

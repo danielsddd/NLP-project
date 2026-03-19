@@ -68,7 +68,7 @@ def normalize_hebrew(text):
 def get_source_text(record):
     """Extract the text that the student model will see.
     Uses source_comment field to pick top_comment or the right reply."""
-    teacher = record.get("teacher_output", {})
+    teacher = record.get("final_label") or record.get("teacher_output") or {}
     mods = teacher.get("modifications", [])
 
     if not mods:
@@ -258,7 +258,7 @@ def process_file(input_path, output_dir, model_name="onlplab/alephbert-base",
             except json.JSONDecodeError:
                 continue
 
-            teacher = record.get("teacher_output", {})
+            teacher = record.get("final_label") or record.get("teacher_output") or {}
             has_mod = teacher.get("has_modification", False)
             text, mods = get_source_text(record)
 
