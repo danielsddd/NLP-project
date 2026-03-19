@@ -5,15 +5,23 @@ Comprehensive evaluation and error analysis.
 """
 
 from .evaluate import (
-    ModelEvaluator,
-    EvaluationResult,
-    PredictionExample,
+    evaluate,
+    predict_batch,
+    to_tag_sequences,
+    labels_to_spans,
+    analyze_errors,
+    bootstrap_f1_ci,
     ASPECTS,
+    BIO_ID2LABEL,
 )
 
 __all__ = [
-    "ModelEvaluator",
-    "EvaluationResult",
-    "PredictionExample",
+    "evaluate",
+    "predict_batch",
+    "to_tag_sequences",
+    "labels_to_spans",
+    "analyze_errors",
+    "bootstrap_f1_ci",
     "ASPECTS",
+    "BIO_ID2LABEL",
 ]
