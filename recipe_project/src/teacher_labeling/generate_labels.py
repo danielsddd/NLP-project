@@ -2,13 +2,13 @@
 """
 Teacher Silver Label Generator — v9 (Three-Pass with Majority Vote)
 ====================================================================
-Pass 1: Label all threads with Gemini (primary) + Groq fallback. Batched.
+Pass 1: Label all threads with Gemini (primary). Batched.
 Pass 2: Re-label with same Gemini at temp=0.3 (intra-annotator agreement).
 Pass 3: Re-label with Cerebras Qwen 235B (inter-annotator agreement).
 Final: Majority vote (2/3 agree) → final label. All-3-disagree → manual review.
 
 Usage:
-    # Pass 1 — label everything (Gemini primary, Groq fallback):
+    # Pass 1 — label everything (Gemini):
     python -m src.teacher_labeling.generate_labels \
         -i data/raw_youtube/threads.jsonl --limit 5000 --batch-size 20
 
@@ -29,7 +29,6 @@ Usage:
 
 API keys read from .env automatically:
     GOOGLE_API_KEY=your_gemini_key
-    GROQ_API_KEY=your_groq_key
     CEREBRAS_API_KEY=your_cerebras_key
 """
 
@@ -58,12 +57,6 @@ except ImportError:
     GEMINI_AVAILABLE = False
 
 try:
-    from groq import Groq
-    GROQ_AVAILABLE = True
-except ImportError:
-    GROQ_AVAILABLE = False
-
-try:
     from openai import OpenAI as OpenAIClient
     OPENAI_COMPAT_AVAILABLE = True
 except ImportError:
@@ -79,7 +72,6 @@ DEFAULT_OUTPUT = "data/silver_labels/teacher_output.jsonl"
 REVIEW_OUTPUT = "data/silver_labels/needs_review.jsonl"
 
 GEMINI_FAMILY = "gemini"
-GROQ_FAMILY = "groq"
 CEREBRAS_FAMILY = "cerebras"
 
 
@@ -339,8 +331,6 @@ def detect_model_family(model_name: str) -> str:
     name = model_name.lower()
     if "gemini" in name:
         return GEMINI_FAMILY
-    if "llama" in name or "mixtral" in name or "groq" in name:
-        return GROQ_FAMILY
     if "qwen" in name or "cerebras" in name:
         return CEREBRAS_FAMILY
     return ""
@@ -385,43 +375,6 @@ class GeminiTeacher:
 
 
 # =============================================================================
-# TEACHER: GROQ
-# =============================================================================
-
-class GroqTeacher:
-    """Groq (Llama 3.3 70B) — fallback teacher."""
-
-    NAME = "llama-3.3-70b-versatile"
-    FAMILY = GROQ_FAMILY
-    MIN_DELAY = 2.5
-
-    def __init__(self, api_key: str, model_name: str = None):
-        if not GROQ_AVAILABLE:
-            raise ImportError("groq not installed. Run: pip install groq")
-        self.client = Groq(api_key=api_key)
-        self.model_name = model_name or self.NAME
-
-    def label_batch(self, threads: List[dict]) -> tuple:
-        """Returns (results_dict, error_str, is_rate_limit)."""
-        prompt_text = format_batch(threads)
-        try:
-            completion = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt_text},
-                ],
-                temperature=0.1,
-                max_tokens=4096,
-            )
-            raw = completion.choices[0].message.content
-            results = parse_batch_response(raw, threads)
-            return results, None, False
-        except Exception as e:
-            return None, str(e), is_rate_limit_error(e)
-
-
-# =============================================================================
 # TEACHER: CEREBRAS (Qwen 3 235B via OpenAI-compatible API)
 # =============================================================================
 
@@ -430,7 +383,7 @@ class CerebrasTeacher:
 
     NAME = "qwen-3-235b-a22b-instruct-2507"
     FAMILY = CEREBRAS_FAMILY
-    MIN_DELAY = 8.0  
+    MIN_DELAY = 8.0
 
     def __init__(self, api_key: str, model_name: str = None):
         if not OPENAI_COMPAT_AVAILABLE:
@@ -686,21 +639,20 @@ def run_repass(todo: List[dict], teacher, output_field: str,
 
 
 # =============================================================================
-# PASS 1: INITIAL LABELING
+# PASS 1: INITIAL LABELING (Gemini only)
 # =============================================================================
 
 def run_pass1(input_path: str, output_path: str,
-              gemini_key: str = None, groq_key: str = None,
-              gemini_model: str = None, groq_model: str = None,
+              gemini_key: str = None,
+              gemini_model: str = None,
               limit: int = None, skip_existing: bool = True,
               batch_size: int = BATCH_SIZE):
-    """Pass 1: Label threads with Gemini (primary) + Groq (fallback)."""
+    """Pass 1: Label threads with Gemini."""
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     gemini = None
-    groq = None
 
     if gemini_key and GEMINI_AVAILABLE:
         try:
@@ -709,15 +661,8 @@ def run_pass1(input_path: str, output_path: str,
         except Exception as e:
             print(f"⚠ Gemini init failed: {e}")
 
-    if groq_key and GROQ_AVAILABLE:
-        try:
-            groq = GroqTeacher(api_key=groq_key, model_name=groq_model)
-            print(f"✓ Groq ready:   {groq.model_name}")
-        except Exception as e:
-            print(f"⚠ Groq init failed: {e}")
-
-    if not gemini and not groq:
-        print("❌ No teacher available! Set GOOGLE_API_KEY and/or GROQ_API_KEY in .env")
+    if not gemini:
+        print("❌ No teacher available! Set GOOGLE_API_KEY in .env")
         return
 
     existing_ids = set()
@@ -748,13 +693,14 @@ def run_pass1(input_path: str, output_path: str,
     print(f"\n[PASS 1] Processing {total_threads} threads in ~{num_batches} batches of {batch_size}")
     print(f"Output: {output_path}\n")
 
-    using_gemini = gemini is not None
-    gemini_switched = False
+    teacher = gemini
+    teacher_name = gemini.model_name
+    delay = GeminiTeacher.MIN_DELAY
     consecutive_errors = 0
 
     stats = {
         "total": 0, "with_mods": 0, "no_mods": 0,
-        "gemini_labeled": 0, "groq_labeled": 0,
+        "gemini_labeled": 0,
         "batch_errors": 0, "parse_failures": 0,
         "aspects": {"SUBSTITUTION": 0, "QUANTITY": 0, "TECHNIQUE": 0, "ADDITION": 0},
         "started_at": datetime.now(timezone.utc).isoformat(),
@@ -767,31 +713,17 @@ def run_pass1(input_path: str, output_path: str,
         batch_num += 1
         batch = threads[thread_idx:thread_idx + batch_size]
 
-        if using_gemini:
-            teacher = gemini
-            teacher_name = gemini.model_name
-            delay = GeminiTeacher.MIN_DELAY
-        else:
-            teacher = groq
-            teacher_name = groq.model_name
-            delay = GroqTeacher.MIN_DELAY
-
         results, error, is_rl = teacher.label_batch(batch)
-
-        if error and is_rl and using_gemini and groq:
-            print(f"\n  ⚡ Gemini rate limit at batch {batch_num}. Switching to Groq...")
-            print(f"     Gemini labeled: {stats['gemini_labeled']} threads this run")
-            using_gemini = False
-            gemini_switched = True
-            teacher = groq
-            teacher_name = groq.model_name
-            delay = GroqTeacher.MIN_DELAY
-            results, error, is_rl = teacher.label_batch(batch)
 
         if error or results is None:
             stats["batch_errors"] += 1
             consecutive_errors += 1
             print(f"  [Batch {batch_num}] ERROR: {(error or 'No results')[:100]}")
+            if is_rl:
+                wait_time = 60
+                print(f"  ⏳ Rate limited — waiting {wait_time}s before retry...")
+                time.sleep(wait_time)
+                continue  # retry same batch
             if consecutive_errors >= 5:
                 print(f"\n  ❌ 5 consecutive batch errors — stopping.")
                 break
@@ -823,10 +755,7 @@ def run_pass1(input_path: str, output_path: str,
             else:
                 stats["no_mods"] += 1
 
-            if using_gemini:
-                stats["gemini_labeled"] += 1
-            else:
-                stats["groq_labeled"] += 1
+            stats["gemini_labeled"] += 1
 
             record = {
                 "thread_id": thread["thread_id"],
@@ -858,8 +787,7 @@ def run_pass1(input_path: str, output_path: str,
 
         done = min(thread_idx + batch_size, total_threads)
         pct = stats["with_mods"] / stats["total"] * 100 if stats["total"] else 0
-        tag = "Gemini" if using_gemini else "Groq"
-        print(f"  [Batch {batch_num}: {done}/{total_threads}] ({tag}) "
+        print(f"  [Batch {batch_num}: {done}/{total_threads}] (Gemini) "
               f"+{batch_success} ok, {batch_fail} fail | "
               f"mods={stats['with_mods']} ({pct:.0f}%) errs={stats['batch_errors']}")
 
@@ -877,15 +805,12 @@ def run_pass1(input_path: str, output_path: str,
     print(f"{'='*60}")
     print(f"  Processed:         {stats['total']} threads")
     print(f"    Gemini labeled:  {stats['gemini_labeled']}")
-    print(f"    Groq labeled:    {stats['groq_labeled']}")
     print(f"    With mods:       {stats['with_mods']}")
     print(f"    No mods:         {stats['no_mods']}")
     print(f"    Parse failures:  {stats['parse_failures']}")
     print(f"  Aspects: {stats['aspects']}")
     print(f"  Total in output:   ~{stats['total_in_output']}")
     print(f"  Output: {output_path}")
-    if gemini_switched:
-        print(f"  ⚡ Switched from Gemini to Groq mid-run (rate limit)")
     print(f"\n  Next step: run --second-pass")
     print(f"{'='*60}")
 
@@ -895,8 +820,8 @@ def run_pass1(input_path: str, output_path: str,
 # =============================================================================
 
 def run_pass2(output_path: str,
-              gemini_key: str = None, groq_key: str = None,
-              gemini_model: str = None, groq_model: str = None,
+              gemini_key: str = None,
+              gemini_model: str = None,
               limit: int = None, batch_size: int = BATCH_SIZE):
     """Pass 2: Re-label with same Gemini at temperature=0.3."""
 
@@ -1237,14 +1162,10 @@ Workflow:
                         help=f"Output JSONL path (default: {DEFAULT_OUTPUT})")
     parser.add_argument("--gemini-key", default=os.environ.get("GOOGLE_API_KEY"),
                         help="Gemini API key (default: GOOGLE_API_KEY env var)")
-    parser.add_argument("--groq-key", default=os.environ.get("GROQ_API_KEY"),
-                        help="Groq API key (default: GROQ_API_KEY env var)")
     parser.add_argument("--cerebras-key", default=os.environ.get("CEREBRAS_API_KEY"),
                         help="Cerebras API key (default: CEREBRAS_API_KEY env var)")
     parser.add_argument("--gemini-model", default=None,
                         help=f"Gemini model (default: {GeminiTeacher.NAME})")
-    parser.add_argument("--groq-model", default=None,
-                        help=f"Groq model (default: {GroqTeacher.NAME})")
     parser.add_argument("--cerebras-model", default=None,
                         help=f"Cerebras model (default: {CerebrasTeacher.NAME})")
     parser.add_argument("--limit", type=int, help="Max threads to process per run")
@@ -1281,9 +1202,7 @@ Workflow:
         run_pass2(
             output_path=args.output,
             gemini_key=args.gemini_key,
-            groq_key=args.groq_key,
             gemini_model=args.gemini_model,
-            groq_model=args.groq_model,
             limit=args.limit,
             batch_size=args.batch_size,
         )
@@ -1292,20 +1211,17 @@ Workflow:
     if not args.input:
         parser.error("--input / -i is required for pass 1 labeling")
 
-    if not args.gemini_key and not args.groq_key:
+    if not args.gemini_key:
         parser.error(
-            "No API keys found!\n"
-            "Set GOOGLE_API_KEY and/or GROQ_API_KEY in .env,\n"
-            "or pass --gemini-key / --groq-key."
+            "No API key found!\n"
+            "Set GOOGLE_API_KEY in .env, or pass --gemini-key."
         )
 
     run_pass1(
         input_path=args.input,
         output_path=args.output,
         gemini_key=args.gemini_key,
-        groq_key=args.groq_key,
         gemini_model=args.gemini_model,
-        groq_model=args.groq_model,
         limit=args.limit,
         skip_existing=not args.no_skip,
         batch_size=args.batch_size,

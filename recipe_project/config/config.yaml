@@ -1,13 +1,7 @@
 # =============================================================================
 # Project Configuration
 # =============================================================================
-# Recipe Modification Extraction
-# Group 11: Daniel Simanovsky & Roei Ben Artzi
-# =============================================================================
 
-# -----------------------------------------------------------------------------
-# Paths (relative to project root)
-# -----------------------------------------------------------------------------
 paths:
   data:
     raw_youtube: "data/raw_youtube"
@@ -22,16 +16,32 @@ paths:
     results: "results"
 
 # -----------------------------------------------------------------------------
-# Teacher Model (Silver Label Generation)
+# Teacher Models (Silver Label Generation — Three-Pass)
 # -----------------------------------------------------------------------------
 teacher:
-  provider: "gemini"  # Options: "gemini", "openai"
-  gemini:
-    model: "gemini-1.5-pro"
-    temperature: 0.0
-  openai:
-    model: "gpt-4o"
-    temperature: 0.0
+  # Pass 1: Gemini primary (temp=0.1)
+  # Pass 2: Same Gemini intra-annotator (temp=0.3)
+  pass1:
+    provider: "gemini"
+    model: "gemini-3.1-flash-lite-preview"
+    temperature: 0.1
+    batch_size: 5
+    min_delay: 6.0  # seconds between batches (15 RPM safe margin)
+
+  pass2:
+    provider: "gemini"
+    model: "gemini-3.1-flash-lite-preview"
+    temperature: 0.3  # higher temp for intra-annotator diversity
+    batch_size: 5
+    min_delay: 6.0
+
+  # Pass 3: Cerebras Qwen 235B inter-annotator
+  pass3:
+    provider: "cerebras"
+    model: "qwen-3-235b-a22b-instruct-2507"
+    temperature: 0.1
+    batch_size: 5
+    min_delay: 8.0
 
 # -----------------------------------------------------------------------------
 # Student Model (AlephBERT)
@@ -40,14 +50,24 @@ student:
   model_name: "onlplab/alephbert-base"
   num_labels: 9  # BIO scheme
   max_seq_length: 128
-  
+
   training:
     epochs: 5
     batch_size: 16
     learning_rate: 2.0e-5
     warmup_ratio: 0.1
     weight_decay: 0.01
+    max_grad_norm: 1.0
     fp16: true
+    early_stopping_patience: 3
+
+# -----------------------------------------------------------------------------
+# Baselines
+# -----------------------------------------------------------------------------
+baselines:
+  mbert:
+    model_name: "bert-base-multilingual-cased"
+    # Same hyperparameters as student for fair comparison
 
 # -----------------------------------------------------------------------------
 # Aspects (Modification Categories)
@@ -57,6 +77,14 @@ aspects:
   - QUANTITY      # Modifying amounts
   - TECHNIQUE     # Cooking method changes
   - ADDITION      # Adding new ingredients
+
+# -----------------------------------------------------------------------------
+# Evaluation
+# -----------------------------------------------------------------------------
+evaluation:
+  primary_metric: "entity_f1"  # seqeval strict entity F1
+  bootstrap_n: 1000
+  gold_set_path: "data/gold_validation"
 
 # -----------------------------------------------------------------------------
 # Reproducibility

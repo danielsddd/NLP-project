@@ -1,30 +1,35 @@
-# YouTube Comment Collector v2
+# YouTube Thread Collector v4.1
 
 **Group 11: Daniel Simanovsky & Roei Ben Artzi**  
 **NLP 2025a - Recipe Modification Extraction**
 
-A clean, modular YouTube comment collector with configuration files for easy customization.
+Collects Hebrew comment **threads** (top comment + replies) from YouTube cooking channels. Thread-level collection enables the teacher model to see question→answer context for better labeling.
 
-## 📁 Files Structure
+## Files Structure
 
 ```
-youtube_collector_v2/
+youtube_collector/
 ├── collect.py          # Main script (the only code you run)
 ├── config.yaml         # Settings: filtering, API limits, output paths
 ├── channels.yaml       # Channel list: add your channels here
-├── requirements.txt    # Python dependencies
-└── data/
-    └── raw_youtube/    # Output directory (created automatically)
-        ├── comments.jsonl
-        └── collection_stats.json
+└── README.md           # This file
 ```
 
-## 🚀 Quick Start
+Output goes to:
+```
+data/raw_youtube/
+├── threads.jsonl              # All collected threads
+├── threads_cooking_only.jsonl # After channel verification filter
+├── channels_report.csv        # Channel verification spreadsheet
+└── collection_stats.json      # Run statistics
+```
+
+## Quick Start
 
 ### 1. Install dependencies
 
 ```bash
-pip install -r requirements.txt
+pip install google-api-python-client pyyaml python-dotenv
 ```
 
 ### 2. Test your API key
@@ -33,72 +38,118 @@ pip install -r requirements.txt
 python collect.py --api-key YOUR_KEY --test
 ```
 
-### 3. Find Hebrew cooking channels
+### 3. Discover Hebrew cooking channels
 
 ```bash
-python collect.py --api-key YOUR_KEY --discover "מתכונים בישול"
+python collect.py --api-key YOUR_KEY --discover-all
 ```
 
-### 4. Add channels to `channels.yaml`
+This runs 10 Hebrew cooking queries and writes results to `channels.yaml`.
+
+### 4. Verify channels in `channels.yaml`
+
+Open each channel URL, confirm it's a cooking channel, set `active: false` for non-cooking:
 
 ```yaml
 channels:
   - name: "שם הערוץ"
-    id: "UC_PASTE_ID_HERE"      # From discover output
+    id: "UC_PASTE_ID_HERE"
     active: true
     category: "cooking"
 ```
 
-### 5. Collect comments
+### 5. Collect threads
 
 ```bash
 python collect.py --api-key YOUR_KEY --collect
 ```
 
-## 📝 What Data Is Collected?
+### 6. (Optional) Post-collection channel verification
 
-**Only what's needed for the NLP project:**
+```bash
+# Generate channel report CSV
+python collect.py --list-channels
 
-| Field | Example | Why We Need It |
-|-------|---------|----------------|
-| `text` | `"הוספתי יותר סוכר והיה מעולה"` | **Main input for extraction** |
-| `like_count` | `15` | **Ranking module** (social signal) |
-| `video_title` | `"עוגת שוקולד מושלמת"` | Context: which recipe |
-| `channel_title` | `"השף הביתי"` | Context: which channel |
-| `video_id` | `"abc123"` | Group comments by recipe |
-| `comment_id` | `"Ugw..."` | Deduplication only |
-| `word_count` | `5` | Pre-computed for filtering |
-| `has_modification_keyword` | `true` | Pre-detected keywords |
-| `detected_keywords` | `["הוספתי", "יותר"]` | Which keywords found |
+# Filter to cooking-only after reviewing CSV
+python collect.py --filter-channels --csv data/raw_youtube/channels_report.csv
+```
 
-**NOT collected (unnecessary for NLP):** Author info, timestamps, reply relationships
+## Thread JSONL Format
 
-## ⚙️ Configuration Files
+Each line in `threads.jsonl` is one JSON object:
 
-### `config.yaml` - Settings
+```json
+{
+  "thread_id": "UgwXXX",
+  "video_id": "abc123",
+  "video_title": "לחם כוסמין",
+  "channel_id": "UCc0z...",
+  "channel_title": "חן במטבח",
+  "top_comment": {
+    "comment_id": "UgwXXX",
+    "text": "אפשר במקום קמח רגיל להשתמש בכוסמין?",
+    "like_count": 3
+  },
+  "replies": [
+    {
+      "comment_id": "UgwYYY",
+      "text": "כן בטח, אותה כמות",
+      "like_count": 1,
+      "is_creator": false
+    }
+  ],
+  "has_creator_reply": false,
+  "total_likes": 4,
+  "collected_at": "2026-03-18T14:30:00Z"
+}
+```
 
-Edit this to change:
-- **Output paths**: Where files are saved
-- **Collection limits**: Max videos, comments per video
-- **Filtering**: Minimum words, Hebrew requirement, spam keywords
-- **API settings**: Retry limits, delays
+### Key Fields
 
-### `channels.yaml` - Channel List
+| Field | Purpose |
+|-------|---------|
+| `thread_id` | Deduplication + matching to teacher labels |
+| `top_comment.text` | Main comment text (input for teacher) |
+| `replies[].text` | Reply texts (teacher extracts mods from replies to questions) |
+| `replies[].is_creator` | Creator replies have highest credibility |
+| `has_creator_reply` | Quick filter for high-value threads |
+| `total_likes` | Social signal for ranking module |
+| `channel_id` | Per-channel analysis in paper |
 
-Edit this to:
-- Add new channels (set `active: true`)
-- Disable channels (set `active: false`)
-- Organize by category
+## Why Threads (Not Flat Comments)
 
-## 📋 Commands Reference
+Many recipe modifications appear as question→answer pairs:
+
+```
+Comment: "אפשר במקום חרדל גרגירי את הסוג החלק?"   ← QUESTION
+Reply:   "כן בטח, אותה כמות"                       ← ANSWER (the actual mod)
+```
+
+The teacher model sees the full thread and extracts from the **reply**, not the question. A question with no meaningful reply is discarded (`has_modification: false`).
+
+## Filtering Rules
+
+- At least one Hebrew character in thread
+- Top comment >= 3 words
+- No spam keywords (http, www, subscribe, etc.)
+- Skips creator's own top-level posts (usually recipe intro/pin)
+- Keeps creator replies (valuable confirmation signal)
+- Replies also filtered for Hebrew and spam
+
+## API Rate Limits
+
+YouTube API free tier: 10,000 units/day. Uses `playlistItems` (cheaper) instead of `search` for video listing. The script auto-resumes if interrupted (tracks seen `thread_id`s).
+
+## Commands Reference
 
 | Command | Description |
 |---------|-------------|
 | `--test` | Test API connection |
-| `--discover "query"` | Search for channels |
-| `--channel UC...` | Collect from one channel |
-| `--video VIDEO_ID` | Collect from one video |
-| `--collect` | Collect from all active channels |
+| `--discover-all` | Search for channels using 10 Hebrew cooking queries |
+| `--collect` | Collect threads from all active channels |
+| `--collect --target N` | Collect up to N threads |
+| `--list-channels` | Generate channels_report.csv |
+| `--filter-channels --csv FILE` | Filter threads to cooking-only channels |
 
 ### Examples
 
@@ -106,95 +157,30 @@ Edit this to:
 # Test API
 python collect.py --api-key YOUR_KEY --test
 
-# Search for baking channels
-python collect.py --api-key YOUR_KEY --discover "אפייה ביתית"
+# Full discovery
+python collect.py --api-key YOUR_KEY --discover-all
 
-# Collect from a specific video (for testing)
-python collect.py --api-key YOUR_KEY --video dQw4w9WgXcQ
+# Collect 5000 threads
+python collect.py --api-key YOUR_KEY --collect --target 5000
 
-# Collect from a specific channel
-python collect.py --api-key YOUR_KEY --channel UCxxxxxxxxxxxxxxx
+# Generate channel report for verification
+python collect.py --list-channels
 
-# Full collection from all configured channels
-python collect.py --api-key YOUR_KEY --collect
+# Filter to cooking-only after reviewing CSV
+python collect.py --filter-channels --csv data/raw_youtube/channels_report.csv
 ```
 
-## 📊 Output Files
+## Collection Stats
 
-### `comments.jsonl`
-
-One JSON object per line:
-
-```json
-{"comment_id": "Ugw...", "video_id": "abc", "text": "הוספתי יותר סוכר והיה מעולה", "like_count": 15, "reply_count": 2, "has_modification_keyword": true, "detected_keywords": ["הוספתי", "יותר"], ...}
-```
-
-### `collection_stats.json`
-
-Statistics from the collection run:
+After collection, `collection_stats.json` contains:
 
 ```json
 {
-  "channels_processed": 5,
-  "videos_processed": 127,
-  "comments_found": 4521,
-  "comments_kept": 2847,
-  "comments_filtered": 1674,
-  "api_calls": 312,
-  "filter_reasons": {
-    "no_hebrew": 892,
-    "too_short": 523,
-    "spam": 241,
-    "creator_comment": 18
-  }
+  "channels_processed": 35,
+  "videos_processed": 1247,
+  "threads_found": 5231,
+  "threads_kept": 5012,
+  "threads_filtered": 219,
+  "api_calls": 1589
 }
 ```
-
-## 💡 Tips for Efficient Collection
-
-1. **Test with one video first**
-   ```bash
-   python collect.py --api-key YOUR_KEY --video VIDEO_ID
-   ```
-
-2. **Check API quota usage**
-   - Go to: Google Cloud Console → APIs & Services → YouTube Data API v3
-   - Check "Quotas" tab
-
-3. **Start with fewer videos/comments**
-   - Edit `config.yaml`:
-   ```yaml
-   collection:
-     max_videos_per_channel: 10  # Start small
-     max_comments_per_video: 50
-   ```
-
-4. **Add channels incrementally**
-   - Discover → Add 1-2 channels → Test → Add more
-
-## 🔧 Troubleshooting
-
-### "No comments found" / Empty output
-- Check if video has comments enabled
-- Try a different video/channel
-- Reduce `min_words` in config.yaml
-
-### "API quota exceeded"
-- Wait until midnight Pacific Time
-- Or create a new Google Cloud project
-
-### Comments not in Hebrew
-- Ensure `require_hebrew: true` in config.yaml
-- Try channels with more Hebrew speakers
-
-## 📈 Quota Estimation
-
-| Operation | Cost | For 3,000 comments |
-|-----------|------|-------------------|
-| Search channels | 100 | ~500 (one-time) |
-| Get videos | 100 | ~2,000 |
-| Get comments | 1 | ~500 |
-
-Daily quota: 10,000 units → Easily achievable in one day!
-
----
