@@ -555,10 +555,15 @@ def backup_file(path: Path, suffix: str = ".bak") -> Path:
 
 def run_repass(todo: List[dict], teacher, output_field: str,
                model_field: str, pass_name: str,
-               record_index: dict, batch_size: int = BATCH_SIZE):
+               record_index: dict, batch_size: int = BATCH_SIZE,
+               all_records: List[dict] = None, output_path: Path = None,
+               save_every_n_batches: int = 10):
     """
     Generic batch re-labeling pass for pass 2 and 3.
     Labels threads and stores results in the specified output_field.
+    
+    Args:
+        save_every_n_batches: Save progress every N batches (default: 10 = 200 threads with batch_size=20)
     """
     if not todo:
         print(f"✅ No records need {pass_name}!")
@@ -568,7 +573,10 @@ def run_repass(todo: List[dict], teacher, output_field: str,
     num_batches = (total + batch_size - 1) // batch_size
     print(f"\n[{pass_name}] Processing {total} records in ~{num_batches} batches of {batch_size}")
     print(f"  Teacher: {teacher.model_name}")
-    print(f"  Storing in: {output_field}\n")
+    print(f"  Storing in: {output_field}")
+    if output_path and all_records:
+        print(f"  💾 Incremental save: every {save_every_n_batches} batches ({save_every_n_batches * batch_size} threads)")
+    print()
 
     stats = {
         "total": 0, "success": 0, "batch_errors": 0, "parse_failures": 0,
@@ -579,6 +587,7 @@ def run_repass(todo: List[dict], teacher, output_field: str,
     consecutive_errors = 0
     idx = 0
     batch_num = 0
+    batches_since_save = 0
 
     while idx < total:
         batch_num += 1
@@ -632,6 +641,16 @@ def run_repass(todo: List[dict], teacher, output_field: str,
               f"errs={stats['batch_errors']}")
 
         idx += batch_size
+        batches_since_save += 1
+        
+        # Incremental save every N batches
+        if output_path and all_records and batches_since_save >= save_every_n_batches:
+            print(f"  💾 Saving progress ({stats['success']} records labeled so far)...")
+            backup_file(output_path, f".incremental_{batch_num}.bak")
+            write_all_records(all_records, output_path)
+            batches_since_save = 0
+            print(f"  ✓ Saved to {output_path}")
+        
         time.sleep(teacher.MIN_DELAY)
 
     stats["finished_at"] = datetime.now(timezone.utc).isoformat()
@@ -851,7 +870,8 @@ def run_pass2(output_path: str,
     record_index = {r["thread_id"]: r for r in records}
 
     stats = run_repass(todo, gemini, "second_teacher_output", "second_teacher_model",
-                       "PASS 2 — Intra-annotator", record_index, batch_size)
+                       "PASS 2 — Intra-annotator", record_index, batch_size,
+                       all_records=records, output_path=output_path)
 
     # Compute pairwise agreement
     agreement_counts = {"full": 0, "partial": 0, "none": 0, "error": 0}
@@ -920,7 +940,8 @@ def run_pass3(output_path: str,
     record_index = {r["thread_id"]: r for r in records}
 
     stats = run_repass(todo, cerebras, "third_teacher_output", "third_teacher_model",
-                       "PASS 3 — Inter-annotator", record_index, batch_size)
+                       "PASS 3 — Inter-annotator", record_index, batch_size,
+                       all_records=records, output_path=output_path)
 
     # Compute pairwise agreements
     agr_1v3 = {"full": 0, "partial": 0, "none": 0, "error": 0}

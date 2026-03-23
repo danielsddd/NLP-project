@@ -9,7 +9,7 @@
 # --- Collection targets ---
 collection:
   target_threads: 5000        # Total threads to collect (was target_comments: 3000)
-  max_videos_per_channel: 50  # Videos to scan per channel
+  max_videos_per_channel: 200  # Videos to scan per channel
   max_threads_per_video: 200  # Max threads per video
   include_replies: true       # Collect reply threads (MUST be true for v4)
 
