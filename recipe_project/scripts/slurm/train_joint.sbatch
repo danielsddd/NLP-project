@@ -1,8 +1,10 @@
 #!/bin/bash
 # =============================================================================
-# SLURM Script: Train Joint Intent+Slot CRF Model
+# SLURM Script: Train BERT + CRF Model (V7 — no intent conditioning)
 # =============================================================================
-# Trains the joint model with CRF on merged (original + enriched) data.
+# Trains DictaBERT + CRF on merged (original + enriched) data.
+# V7 CHANGE: Removed --intent-weight (no intent head).
+#             Added --class-weights-file for emission weighting.
 # Submit with: sbatch scripts/slurm/train_joint.sbatch
 # =============================================================================
 
@@ -28,11 +30,10 @@ OUTPUT_DIR="models/checkpoints/joint_crf"
 EPOCHS=10
 BATCH_SIZE=16
 LR=2e-5
-INTENT_WEIGHT=0.3
 SEED=42
 
 echo "=========================================="
-echo "JOINT CRF TRAINING"
+echo "BERT + CRF TRAINING (V7 — no intent head)"
 echo "=========================================="
 echo "Job ID:       $SLURM_JOB_ID"
 echo "Node:         $(hostname)"
@@ -41,8 +42,7 @@ echo "Model:        $MODEL_NAME"
 echo "Train File:   $TRAIN_FILE"
 echo "Epochs:       $EPOCHS"
 echo "Batch Size:   $BATCH_SIZE"
-echo "Learning Rate: $LR"
-echo "Intent Weight: $INTENT_WEIGHT"
+echo "Learning Rate: $LR (head: $(echo "$LR * 5" | bc))"
 echo "Seed:         $SEED"
 echo "=========================================="
 
@@ -96,8 +96,8 @@ python -m src.models.train_joint \
     --epochs $EPOCHS \
     --batch-size $BATCH_SIZE \
     --lr $LR \
-    --intent-weight $INTENT_WEIGHT \
-    --seed $SEED
+    --seed $SEED \
+    --class-weights-file data/processed/stats_merged.json
 
 # Check exit status
 EXIT_CODE=$?
