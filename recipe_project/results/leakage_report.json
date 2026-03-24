@@ -1,0 +1,29 @@
+{
+  "original": {
+    "path": "data/silver_labels/teacher_output.jsonl",
+    "unique_videos": 699,
+    "total_threads": 10058
+  },
+  "enriched": {
+    "path": "data/silver_labels/threads_positives_focus_labeled.jsonl",
+    "unique_videos": 683,
+    "total_threads": 5016
+  },
+  "overlap": {
+    "video_count": 3,
+    "original_threads_in_overlap": 110,
+    "enriched_threads_in_overlap": 3,
+    "overlapping_video_ids": [
+      "14rLPGHb1fA",
+      "2XSVrfcY0eM",
+      "UL1P-zFxdGM"
+    ]
+  },
+  "verdict": "MINOR — 3 overlapping videos",
+  "recommended_action": "Option A: Remove 3 overlapping videos from enriched set. Option B: Ensure overlapping video threads go to SAME split. Affected: 110 original + 3 enriched threads.",
+  "channel_overlap": 9,
+  "positive_rates": {
+    "original": 0.1223,
+    "enriched": 0.2773
+  }
+}
