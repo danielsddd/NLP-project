@@ -19,7 +19,7 @@
 # CONFIGURATION - Update these paths for your setup
 # =============================================================================
 USER_DIR="/vol/joberant_nobck/data/NLP_368307701_2526a/$USER"
-PROJECT_DIR="$USER_DIR/recipe_modification_extraction"
+PROJECT_DIR="$USER_DIR/recipe_modification_extraction/recipe_project"
 
 echo "=========================================="
 echo "GPU TEST - Recipe Modification Extraction"

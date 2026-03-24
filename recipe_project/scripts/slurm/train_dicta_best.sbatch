@@ -11,9 +11,8 @@
 #SBATCH --job-name=dicta_lg
 #SBATCH --partition=studentkillable
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="geforce_rtx_3090|a5000|a6000"
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
+#SBATCH --mem=24G
 #SBATCH --time=10:00:00
 #SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/%u/logs/%j_dicta_large.out
 #SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/%u/logs/%j_dicta_large.err
@@ -22,7 +21,7 @@
 # CONFIGURATION
 # =============================================================================
 USER_DIR="/vol/joberant_nobck/data/NLP_368307701_2526a/$USER"
-PROJECT_DIR="$USER_DIR/recipe_modification_extraction"
+PROJECT_DIR="$USER_DIR/recipe_modification_extraction/recipe_project"
 
 MODEL="dicta-il/dictabert-large"
 OUTPUT_DIR="models/checkpoints/dictabert_large"
@@ -75,7 +74,7 @@ python -m src.models.train_student \
     --data-dir data/processed \
     --output-dir "$OUTPUT_DIR" \
     --epochs 10 \
-    --batch-size 8 \
+    --batch-size 4 \
     --lr 2e-5 \
     --seed 42 \
     --class-weights balanced \

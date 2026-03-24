@@ -2,19 +2,18 @@
 #SBATCH --job-name=eval_pipe
 #SBATCH --partition=studentkillable
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="geforce_rtx_2080|geforce_rtx_3090|a5000|a6000|l40s"
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=16G
 #SBATCH --time=01:00:00
-#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/%u/recipe_modification_extraction/logs/slurm_outputs/%j_eval_pipeline.out
-#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/%u/recipe_modification_extraction/logs/slurm_outputs/%j_eval_pipeline.err
+#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/%u/recipe_modification_extraction/recipe_project/logs/slurm_outputs/%j_eval_pipeline.out
+#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/%u/recipe_modification_extraction/recipe_project/logs/slurm_outputs/%j_eval_pipeline.err
 
 PROJ=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2
 source $PROJ/anaconda3/etc/profile.d/conda.sh
 conda activate recipe_nlp
 export HF_HOME=$PROJ/.cache/huggingface
 export TOKENIZERS_PARALLELISM=false
-cd $PROJ/recipe_modification_extraction
+cd $PROJ/recipe_modification_extraction/recipe_project
 
 echo "============================================================"
 echo "TWO-STEP PIPELINE EVALUATION"

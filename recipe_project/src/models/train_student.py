@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
 """
-Student Model Training — v5 (Enhanced)
+Student Model Training — v6 (Re-tokenizing)
 Fine-tunes BERT models for token classification with:
+  - Per-model re-tokenization (fixes cross-tokenizer bug)
   - Class-weighted loss (balanced/sqrt) to fight O-token dominance
   - Focal loss option for hard example mining
   - Negative example downsampling
   - Early stopping on entity F1
 
+v6 FIX: The Dataset now re-tokenizes from raw text + modifications using
+the correct model's tokenizer at init time. This fixes the critical bug where
+all models were using DictaBERT's pre-baked input_ids regardless of which
+model was being trained.
+
 Usage:
-    # Basic (same as before)
-    python -m src.models.train_student --model dicta-il/dictabert --data-dir data/processed_dictabert --output-dir models/checkpoints/dictabert --fp16
+    # Basic
+    python -m src.models.train_student --model dicta-il/dictabert --data-dir data/processed --output-dir models/checkpoints/dictabert --fp16
 
     # With class weights (recommended)
-    python -m src.models.train_student --model dicta-il/dictabert --data-dir data/processed_dictabert --output-dir models/checkpoints/dictabert_weighted --class-weights balanced --fp16
-
-    # With downsampling + weights
-    python -m src.models.train_student --model dicta-il/dictabert --data-dir data/processed_dictabert --output-dir models/checkpoints/dictabert_ds --class-weights balanced --neg-ratio 3.0 --fp16
+    python -m src.models.train_student --model dicta-il/dictabert --data-dir data/processed --output-dir models/checkpoints/dictabert_weighted --class-weights balanced --fp16
 
     # With focal loss
-    python -m src.models.train_student --model dicta-il/dictabert --data-dir data/processed_dictabert --output-dir models/checkpoints/dictabert_focal --focal-loss --focal-gamma 2.0 --fp16
+    python -m src.models.train_student --model dicta-il/dictabert --data-dir data/processed --output-dir models/checkpoints/dictabert_focal --class-weights balanced --focal-loss --focal-gamma 2.0 --fp16
 """
 
 import json
@@ -40,6 +43,9 @@ from transformers import (
     set_seed,
 )
 from seqeval.metrics import f1_score, precision_score, recall_score, classification_report
+
+# Import alignment function from preprocessing
+from src.preprocessing.prepare_data import align_example
 
 # =============================================================================
 # FOCAL LOSS
@@ -65,20 +71,33 @@ class FocalLoss(nn.Module):
         return focal_loss.mean()
 
 # =============================================================================
-# DATASET
+# DATASET (v6 — re-tokenizing)
 # =============================================================================
 
 class TokenClassificationDataset(Dataset):
-    """Loads preprocessed JSONL with optional negative downsampling."""
+    """Loads preprocessed JSONL with optional re-tokenization and negative downsampling.
 
-    def __init__(self, path, max_examples=None, neg_ratio=None, seed=42):
+    v6 FIX: If a tokenizer and label2id are provided, the dataset re-tokenizes
+    each example from raw text + modifications using align_example(). This ensures
+    each model gets input_ids from its OWN tokenizer, not the preprocessing tokenizer.
+
+    If the JSONL lacks a 'modifications' field (old format), falls back to
+    using pre-baked input_ids (backward compatible but only correct for the
+    model whose tokenizer was used during preprocessing).
+    """
+
+    def __init__(self, path, max_examples=None, neg_ratio=None, seed=42,
+                 tokenizer=None, label2id=None, max_length=128):
         """
         Args:
             path: Path to JSONL file
             max_examples: Limit total examples (for overfit test)
             neg_ratio: Ratio of negative to positive examples.
                        None = keep all. 3.0 = keep 3x negatives per positive.
-                       1.0 = balanced 50/50.
+            seed: Random seed for downsampling
+            tokenizer: HuggingFace tokenizer for re-tokenization (recommended)
+            label2id: Label-to-ID mapping (required if tokenizer is provided)
+            max_length: Max sequence length for re-tokenization
         """
         all_examples = []
         with open(path, 'r', encoding='utf-8') as f:
@@ -87,6 +106,7 @@ class TokenClassificationDataset(Dataset):
                 if max_examples and len(all_examples) >= max_examples:
                     break
 
+        # Downsampling
         if neg_ratio is not None and max_examples is None:
             positives = []
             negatives = []
@@ -102,12 +122,46 @@ class TokenClassificationDataset(Dataset):
             if len(negatives) > max_neg:
                 negatives = rng.sample(negatives, max_neg)
 
-            self.examples = positives + negatives
-            rng.shuffle(self.examples)
+            all_examples = positives + negatives
+            rng.shuffle(all_examples)
             print(f"  Downsampled: {len(positives)} pos + {len(negatives)} neg "
-                  f"= {len(self.examples)} total (ratio={neg_ratio})")
-        else:
-            self.examples = all_examples
+                  f"= {len(all_examples)} total (ratio={neg_ratio})")
+
+        # ─── Re-tokenize if tokenizer provided ───────────────────────────
+        if tokenizer is not None and label2id is not None:
+            # Check if first example has 'modifications' field
+            has_modifications = len(all_examples) > 0 and "modifications" in all_examples[0]
+
+            if has_modifications:
+                print(f"  Re-tokenizing {len(all_examples)} examples with {tokenizer.name_or_path}...")
+                retokenized = []
+                skipped = 0
+                for i, ex in enumerate(all_examples):
+                    if (i + 1) % 5000 == 0:
+                        print(f"    Re-tokenizing {i + 1}/{len(all_examples)}...")
+
+                    result, stats = align_example(
+                        ex["text"], ex.get("modifications", []),
+                        tokenizer, label2id, max_length
+                    )
+                    if result is None:
+                        skipped += 1
+                        continue
+
+                    # Carry over metadata
+                    result["has_modification"] = ex.get("has_modification", False)
+                    result["thread_id"] = ex.get("thread_id", "")
+                    retokenized.append(result)
+
+                print(f"  Re-tokenized: {len(retokenized)} examples "
+                      f"({skipped} skipped)")
+                all_examples = retokenized
+            else:
+                print(f"  WARNING: JSONL lacks 'modifications' field — using pre-baked input_ids.")
+                print(f"  This is only correct if preprocessing used the same tokenizer as {tokenizer.name_or_path}.")
+                print(f"  To fix: re-run prepare_data_merged.py with the modifications patch.")
+
+        self.examples = all_examples
 
     def __len__(self):
         return len(self.examples)
@@ -203,7 +257,6 @@ class WeightedTrainer(Trainer):
 
 def make_compute_metrics(id2label):
     """Returns a compute_metrics function for HF Trainer."""
-
     def compute_metrics(eval_preds):
         logits, labels = eval_preds
         predictions = np.argmax(logits, axis=-1)
@@ -270,7 +323,11 @@ def train(args):
     print(f"  FP16:          {args.fp16}")
     print(f"{'='*60}")
 
-    # Load datasets
+    # ─── Load tokenizer FIRST (needed for re-tokenization) ───────────
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    print(f"\nTokenizer: {tokenizer.__class__.__name__} ({args.model})")
+
+    # ─── Load datasets with re-tokenization ──────────────────────────
     train_path = data_dir / "train.jsonl"
     val_path = data_dir / "val.jsonl"
 
@@ -281,9 +338,14 @@ def train(args):
 
     print(f"\nLoading training data...")
     train_ds = TokenClassificationDataset(
-        train_path, args.max_examples, neg_ratio=args.neg_ratio, seed=args.seed
+        train_path, args.max_examples, neg_ratio=args.neg_ratio, seed=args.seed,
+        tokenizer=tokenizer, label2id=label2id, max_length=128,
     )
-    val_ds = TokenClassificationDataset(val_path)
+    print(f"Loading validation data...")
+    val_ds = TokenClassificationDataset(
+        val_path,
+        tokenizer=tokenizer, label2id=label2id, max_length=128,
+    )
     print(f"Train: {len(train_ds)}, Val: {len(val_ds)}")
 
     # Detect overfit test mode
@@ -302,8 +364,7 @@ def train(args):
         print(f"\nComputing class weights...")
         class_weights = compute_class_weights(train_ds, num_labels, scheme=args.class_weights)
 
-    # Load model + tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    # Load model
     model = AutoModelForTokenClassification.from_pretrained(
         args.model,
         num_labels=num_labels,
@@ -422,7 +483,7 @@ def train(args):
 # =============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="Train student model (v5 - enhanced)")
+    parser = argparse.ArgumentParser(description="Train student model (v6 - re-tokenizing)")
     # Model & data
     parser.add_argument("--model", default="onlplab/alephbert-base")
     parser.add_argument("--data-dir", default="data/processed")

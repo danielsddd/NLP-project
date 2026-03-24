@@ -10,9 +10,8 @@
 #SBATCH --job-name=ablation_size
 #SBATCH --partition=studentkillable
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="geforce_rtx_2080_ti|geforce_rtx_3090|a5000"
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
+#SBATCH --mem=24G
 #SBATCH --time=04:00:00
 #SBATCH --array=1-6
 #SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/%u/logs/ablation_size_%A_%a.out
@@ -22,7 +21,7 @@
 # CONFIGURATION
 # =============================================================================
 USER_DIR="/vol/joberant_nobck/data/NLP_368307701_2526a/$USER"
-PROJECT_DIR="$USER_DIR/recipe_modification_extraction"
+PROJECT_DIR="$USER_DIR/recipe_modification_extraction/recipe_project"
 
 # Data sizes for ablation (array index 1-6)
 DATA_SIZES=(0 500 1000 1500 2000 2500 3000)  # Index 0 unused

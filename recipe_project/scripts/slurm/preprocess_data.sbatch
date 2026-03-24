@@ -10,7 +10,7 @@
 #SBATCH --job-name=preprocess
 #SBATCH --partition=studentkillable
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --mem=24G
 #SBATCH --time=02:00:00
 #SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/%u/logs/%j_preprocess.out
 #SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/%u/logs/%j_preprocess.err
@@ -19,7 +19,7 @@
 # CONFIGURATION
 # =============================================================================
 USER_DIR="/vol/joberant_nobck/data/NLP_368307701_2526a/$USER"
-PROJECT_DIR="$USER_DIR/recipe_modification_extraction"
+PROJECT_DIR="$USER_DIR/recipe_modification_extraction/recipe_project"
 
 echo "=========================================="
 echo "DATA PREPROCESSING"

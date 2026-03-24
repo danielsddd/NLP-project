@@ -384,8 +384,8 @@ def process_merged(
             result["thread_id"] = ex["thread_id"]
             result["source_comment"] = ex["source_comment"]
             result["has_modification"] = ex["has_modification"]
+            result["modifications"] = ex["modifications"]
             result["vote_method"] = ex.get("vote_method", "unknown")
-
             processed.append(result)
 
         total_spans = stats["aligned"] + stats["hallucinated"] + stats["truncated"]

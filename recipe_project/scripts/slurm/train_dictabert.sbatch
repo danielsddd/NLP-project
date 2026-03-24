@@ -10,9 +10,8 @@
 #SBATCH --job-name=dictabert
 #SBATCH --partition=studentkillable
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="geforce_rtx_3090|a5000|a6000"
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
+#SBATCH --mem=24G
 #SBATCH --time=08:00:00
 #SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/%u/logs/%j_dictabert.out
 #SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/%u/logs/%j_dictabert.err
@@ -21,7 +20,7 @@
 # CONFIGURATION
 # =============================================================================
 USER_DIR="/vol/joberant_nobck/data/NLP_368307701_2526a/$USER"
-PROJECT_DIR="$USER_DIR/recipe_modification_extraction"
+PROJECT_DIR="$USER_DIR/recipe_modification_extraction/recipe_project"
 
 MODEL="dicta-il/dictabert"
 OUTPUT_DIR="models/checkpoints/dictabert"
