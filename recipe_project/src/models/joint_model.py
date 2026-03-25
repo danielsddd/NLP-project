@@ -144,11 +144,16 @@ class BertCRFModel(nn.Module):
             crf_labels = labels.clone()
             crf_mask = (labels != -100) & (attention_mask == 1)
 
-            # Replace -100 with 0 (O tag) — CRF needs valid indices
+            # CRITICAL FIX: pytorch-crf requires mask[:, 0] == True for every
+            # sequence in the batch. [CLS] always has label=-100 which sets
+            # crf_mask[:, 0] = False → "mask of the first timestep must all be on"
+            # Force it True and set the label to O (0). The [CLS] token's
+            # contribution to the CRF path is harmless since it always predicts O.
+            crf_mask[:, 0] = True
+
+            # Replace -100 with 0 (O tag) — CRF needs valid indices everywhere
             crf_labels[crf_labels == -100] = 0
 
-            # CRF forward returns log-likelihood; negate for loss
-            # mask must be boolean, batch_first=True
             log_likelihood = self.crf(
                 emissions,
                 crf_labels,

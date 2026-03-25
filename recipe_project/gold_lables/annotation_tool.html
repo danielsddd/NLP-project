@@ -1,0 +1,1324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gold Annotation Tool — Hebrew Recipe Modifications</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+Hebrew:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-deep: #0b0f1a;
+    --bg-panel: #111827;
+    --bg-card: #1a2236;
+    --bg-input: #0f1729;
+    --border-dim: rgba(99, 128, 175, 0.1);
+    --border-subtle: rgba(99, 128, 175, 0.18);
+    --text-primary: #e8ecf4;
+    --text-secondary: #8b99b3;
+    --text-dim: #5a6a85;
+    --accent-blue: #4f8ff7;
+    --accent-green: #2dd4a0;
+    --accent-red: #f06565;
+    --sub-color: #f5a623;
+    --qty-color: #4f8ff7;
+    --tech-color: #a78bfa;
+    --add-color: #2dd4a0;
+    --sub-bg: rgba(245, 166, 35, 0.12);
+    --qty-bg: rgba(79, 143, 247, 0.12);
+    --tech-bg: rgba(167, 139, 250, 0.12);
+    --add-bg: rgba(45, 212, 160, 0.12);
+    --sub-text: #d4940a;
+    --qty-text: #3b7ae0;
+    --tech-text: #8b6fe0;
+    --add-text: #1aad80;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'IBM Plex Sans', system-ui, sans-serif;
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  .hebrew-text {
+    font-family: 'Noto Sans Hebrew', 'Segoe UI', 'Arial', sans-serif;
+  }
+
+  /* ─── SETUP SCREEN ─── */
+  .setup-screen {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background:
+      radial-gradient(ellipse at 20% 50%, rgba(79, 143, 247, 0.06) 0%, transparent 60%),
+      radial-gradient(ellipse at 80% 50%, rgba(45, 212, 160, 0.04) 0%, transparent 60%),
+      var(--bg-deep);
+  }
+
+  .setup-card {
+    background: var(--bg-panel);
+    border: 1px solid var(--border-dim);
+    border-radius: 20px;
+    padding: 48px;
+    max-width: 540px;
+    width: 100%;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  }
+
+  .setup-icon { font-size: 36px; margin-bottom: 8px; }
+
+  .setup-title {
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+    letter-spacing: -0.5px;
+  }
+
+  .setup-sub {
+    color: var(--text-dim);
+    font-size: 14px;
+    margin-bottom: 36px;
+  }
+
+  .setup-step {
+    background: var(--bg-deep);
+    border-radius: 14px;
+    padding: 22px;
+    margin-bottom: 16px;
+    border: 1px solid var(--border-dim);
+  }
+
+  .step-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+
+  .step-num {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 700; color: white;
+  }
+
+  .step-label { font-weight: 600; font-size: 15px; }
+
+  .btn-upload {
+    background: linear-gradient(135deg, var(--accent-blue), #3b7ae0);
+    color: white;
+    border: none;
+    border-radius: 10px;
+    padding: 11px 22px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.15s, box-shadow 0.15s;
+    font-family: inherit;
+  }
+  .btn-upload:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(79,143,247,0.3); }
+
+  .annotator-btns { display: flex; gap: 12px; }
+  .annotator-btn {
+    flex: 1;
+    padding: 14px;
+    border-radius: 12px;
+    border: 2px solid var(--border-subtle);
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    text-transform: capitalize;
+    transition: all 0.2s;
+    font-family: inherit;
+  }
+  .annotator-btn.active {
+    border-color: var(--accent-blue);
+    background: rgba(79, 143, 247, 0.1);
+    color: #93c5fd;
+  }
+  .annotator-btn small {
+    display: block;
+    font-size: 12px;
+    font-weight: 400;
+    margin-top: 3px;
+    color: var(--text-dim);
+  }
+
+  .btn-start {
+    width: 100%;
+    padding: 16px;
+    border-radius: 14px;
+    border: none;
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s;
+    margin-top: 8px;
+    font-family: inherit;
+    letter-spacing: 0.3px;
+  }
+  .btn-start.ready {
+    background: linear-gradient(135deg, var(--accent-green), #1aad80);
+    color: white;
+  }
+  .btn-start.disabled {
+    background: rgba(99, 128, 175, 0.08);
+    color: var(--text-dim);
+    cursor: not-allowed;
+  }
+
+  /* ─── TOP BAR ─── */
+  .topbar {
+    background: rgba(17, 24, 39, 0.97);
+    backdrop-filter: blur(16px);
+    border-bottom: 1px solid var(--border-dim);
+    padding: 10px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  .topbar-left {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .topbar-brand { font-weight: 700; font-size: 15px; }
+
+  .topbar-badge {
+    background: rgba(79, 143, 247, 0.12);
+    color: #93c5fd;
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: capitalize;
+  }
+
+  .topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .progress-bar-bg {
+    width: 130px;
+    height: 5px;
+    background: rgba(99, 128, 175, 0.12);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .progress-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent-green), #5aedc4);
+    border-radius: 3px;
+    transition: width 0.4s ease;
+  }
+
+  .progress-text {
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-weight: 600;
+    font-family: 'IBM Plex Mono', monospace;
+    min-width: 90px;
+  }
+
+  .stat-text { font-size: 11px; color: var(--text-dim); }
+
+  .btn-export {
+    background: rgba(45, 212, 160, 0.1);
+    color: var(--accent-green);
+    border: 1px solid rgba(45, 212, 160, 0.25);
+    border-radius: 8px;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 0.15s;
+  }
+  .btn-export:hover { background: rgba(45, 212, 160, 0.18); }
+
+  .btn-icon {
+    background: rgba(99, 128, 175, 0.08);
+    color: var(--text-secondary);
+    border: none;
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  .divider-v {
+    width: 1px;
+    height: 18px;
+    background: var(--border-dim);
+  }
+
+  /* ─── MAIN LAYOUT ─── */
+  .main-layout {
+    display: flex;
+    flex: 1;
+    min-height: calc(100vh - 48px);
+  }
+
+  /* ─── SIDEBAR ─── */
+  .sidebar {
+    width: 210px;
+    background: rgba(11, 15, 26, 0.6);
+    border-right: 1px solid var(--border-dim);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    overflow-y: auto;
+  }
+
+  .sidebar-label {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    margin-bottom: 6px;
+  }
+
+  .filter-btns { display: flex; flex-wrap: wrap; gap: 4px; }
+  .filter-btn {
+    padding: 4px 9px;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.15s;
+  }
+  .filter-btn.active {
+    background: rgba(79, 143, 247, 0.15);
+    color: #93c5fd;
+  }
+
+  .jump-input {
+    width: 100%;
+    background: var(--bg-input);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    padding: 6px 9px;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-family: 'IBM Plex Mono', monospace;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .jump-input:focus { border-color: var(--accent-blue); }
+
+  .shortcuts-section {
+    margin-top: auto;
+    border-top: 1px solid var(--border-dim);
+    padding-top: 14px;
+  }
+
+  .shortcut-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 5px;
+  }
+
+  .shortcut-key {
+    background: rgba(99, 128, 175, 0.08);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 10px;
+    color: var(--text-secondary);
+    font-family: 'IBM Plex Mono', monospace;
+    border: 1px solid var(--border-dim);
+  }
+
+  .shortcut-desc {
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+
+  /* ─── CENTER CONTENT ─── */
+  .center-content {
+    flex: 1;
+    padding: 28px 36px;
+    max-width: 850px;
+  }
+
+  .example-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 18px;
+  }
+
+  .example-header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .example-num {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text-primary);
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  .badge-pos {
+    background: rgba(45, 212, 160, 0.12);
+    color: var(--accent-green);
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .badge-neg {
+    background: rgba(240, 101, 101, 0.12);
+    color: var(--accent-red);
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .meta-text {
+    color: var(--text-dim);
+    font-size: 11px;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  .nav-btns { display: flex; gap: 6px; }
+  .nav-btn {
+    background: rgba(99, 128, 175, 0.08);
+    color: var(--text-secondary);
+    border: none;
+    border-radius: 8px;
+    padding: 8px 18px;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: inherit;
+    font-weight: 500;
+    transition: all 0.15s;
+  }
+  .nav-btn:hover:not(:disabled) { background: rgba(99, 128, 175, 0.15); }
+  .nav-btn:disabled { color: var(--text-dim); cursor: not-allowed; opacity: 0.5; }
+
+  /* ─── TEXT DISPLAY ─── */
+  .text-display {
+    direction: rtl;
+    text-align: right;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: 16px;
+    padding: 28px 30px;
+    font-size: 21px;
+    line-height: 2;
+    color: var(--text-primary);
+    cursor: text;
+    user-select: text;
+    -webkit-user-select: text;
+    min-height: 80px;
+    margin-bottom: 18px;
+    font-family: 'Noto Sans Hebrew', 'Segoe UI', sans-serif;
+    transition: border-color 0.2s;
+  }
+  .text-display:hover { border-color: rgba(79, 143, 247, 0.25); }
+
+  .highlight-sub {
+    background: var(--sub-bg); border-bottom: 2px solid var(--sub-color);
+    padding: 1px 3px; border-radius: 3px; color: var(--sub-text); font-weight: 600;
+  }
+  .highlight-qty {
+    background: var(--qty-bg); border-bottom: 2px solid var(--qty-color);
+    padding: 1px 3px; border-radius: 3px; color: var(--qty-text); font-weight: 600;
+  }
+  .highlight-tech {
+    background: var(--tech-bg); border-bottom: 2px solid var(--tech-color);
+    padding: 1px 3px; border-radius: 3px; color: var(--tech-text); font-weight: 600;
+  }
+  .highlight-add {
+    background: var(--add-bg); border-bottom: 2px solid var(--add-color);
+    padding: 1px 3px; border-radius: 3px; color: var(--add-text); font-weight: 600;
+  }
+
+  /* ─── SILVER TOGGLE ─── */
+  .silver-toggle {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 13px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 0;
+    font-family: inherit;
+    transition: color 0.15s;
+  }
+  .silver-toggle:hover { color: var(--text-secondary); }
+
+  .silver-arrow {
+    display: inline-block;
+    transition: transform 0.2s;
+    font-size: 10px;
+  }
+  .silver-arrow.open { transform: rotate(90deg); }
+
+  .silver-panel {
+    direction: rtl;
+    background: rgba(99, 128, 175, 0.04);
+    border-radius: 10px;
+    padding: 12px 16px;
+    margin-top: 8px;
+    border: 1px solid var(--border-dim);
+  }
+
+  .silver-mod {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    direction: ltr;
+  }
+
+  .aspect-badge {
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    min-width: 85px;
+    text-align: center;
+    font-family: 'IBM Plex Mono', monospace;
+    letter-spacing: 0.3px;
+  }
+
+  .silver-span {
+    color: var(--text-secondary);
+    font-size: 14px;
+    font-family: 'Noto Sans Hebrew', 'Segoe UI', sans-serif;
+  }
+
+  .silver-conf { color: var(--text-dim); font-size: 10px; }
+
+  /* ─── CONTROLS PANEL ─── */
+  .controls-panel {
+    background: rgba(26, 34, 54, 0.5);
+    border-radius: 16px;
+    padding: 24px;
+    border: 1px solid var(--border-dim);
+    margin-top: 18px;
+  }
+
+  .controls-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+    margin-bottom: 10px;
+  }
+
+  .binary-btns { display: flex; gap: 10px; margin-bottom: 20px; }
+  .binary-btn {
+    flex: 1;
+    padding: 14px;
+    border-radius: 12px;
+    border: 2px solid var(--border-subtle);
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.15s;
+  }
+  .binary-btn .hint {
+    font-size: 10px;
+    font-weight: 400;
+    margin-top: 3px;
+    opacity: 0.6;
+    display: block;
+  }
+  .binary-btn.neg-active {
+    border-color: var(--accent-red);
+    background: rgba(240, 101, 101, 0.08);
+    color: var(--accent-red);
+  }
+  .binary-btn.pos-active {
+    border-color: var(--accent-green);
+    background: rgba(45, 212, 160, 0.08);
+    color: var(--accent-green);
+  }
+
+  .aspect-btns { display: flex; gap: 7px; margin-bottom: 16px; }
+  .aspect-btn {
+    flex: 1;
+    padding: 10px 6px;
+    border-radius: 10px;
+    border: 2px solid var(--border-dim);
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: 'IBM Plex Mono', monospace;
+    transition: all 0.15s;
+    letter-spacing: 0.2px;
+  }
+  .aspect-btn .key-hint {
+    display: block;
+    font-size: 9px;
+    font-weight: 400;
+    opacity: 0.6;
+    margin-top: 3px;
+    font-family: 'IBM Plex Sans', sans-serif;
+  }
+
+  .aspect-btn.sub-active { border-color: var(--sub-color); color: var(--sub-color); background: var(--sub-bg); }
+  .aspect-btn.qty-active { border-color: var(--qty-color); color: var(--qty-color); background: var(--qty-bg); }
+  .aspect-btn.tech-active { border-color: var(--tech-color); color: var(--tech-color); background: var(--tech-bg); }
+  .aspect-btn.add-active { border-color: var(--add-color); color: var(--add-color); background: var(--add-bg); }
+
+  /* ─── GOLD SPANS LIST ─── */
+  .gold-span-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--bg-input);
+    border-radius: 8px;
+    padding: 8px 12px;
+    margin-bottom: 6px;
+    border: 1px solid var(--border-dim);
+  }
+
+  .gold-span-text {
+    flex: 1;
+    color: var(--text-primary);
+    font-size: 15px;
+    direction: rtl;
+    font-family: 'Noto Sans Hebrew', 'Segoe UI', sans-serif;
+  }
+
+  .gold-span-select {
+    background: var(--bg-input);
+    border: 1px solid var(--border-subtle);
+    border-radius: 5px;
+    color: var(--text-secondary);
+    font-size: 10px;
+    padding: 3px 5px;
+    cursor: pointer;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  .btn-remove-span {
+    background: rgba(240, 101, 101, 0.12);
+    color: var(--accent-red);
+    border: none;
+    border-radius: 5px;
+    padding: 3px 8px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .btn-remove-span:hover { background: rgba(240, 101, 101, 0.25); }
+
+  /* Animations */
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .fade-in { animation: fadeIn 0.25s ease-out; }
+
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════ SETUP SCREEN ═══════════════ -->
+<div id="setup-screen" class="setup-screen">
+  <div class="setup-card">
+    <div style="text-align:center; margin-bottom:32px;">
+      <div class="setup-icon">📝</div>
+      <h1 class="setup-title">Gold Annotation Tool</h1>
+      <p class="setup-sub">Hebrew Recipe Modification Extraction</p>
+    </div>
+
+    <!-- Step 1: Upload -->
+    <div class="setup-step">
+      <div class="step-header">
+        <div class="step-num" id="step1-num" style="background:var(--accent-blue);">1</div>
+        <span class="step-label">Load Data</span>
+      </div>
+      <div id="upload-area" style="padding-left:38px;">
+        <button class="btn-upload" onclick="document.getElementById('file-input').click()">
+          Upload annotation_sample.jsonl
+        </button>
+        <p style="color:var(--text-dim); font-size:12px; margin-top:8px;">
+          From: data/gold_validation/annotation_sample.jsonl
+        </p>
+        <input type="file" id="file-input" accept=".jsonl,.json,.txt" style="display:none" onchange="handleFileUpload(event)">
+      </div>
+      <div id="upload-done" class="hidden" style="padding-left:38px; color:var(--accent-green); font-size:14px;">
+        <span id="upload-count"></span> examples loaded
+        <button onclick="document.getElementById('file-input').click()" style="background:none; border:none; color:var(--text-dim); cursor:pointer; text-decoration:underline; font-size:12px; margin-left:10px;">reload</button>
+      </div>
+    </div>
+
+    <!-- Step 2: Annotator -->
+    <div class="setup-step" id="step2" style="opacity:0.4; pointer-events:none;">
+      <div class="step-header">
+        <div class="step-num" id="step2-num" style="background:var(--accent-blue);">2</div>
+        <span class="step-label">Select Annotator</span>
+      </div>
+      <div class="annotator-btns" style="padding-left:38px;">
+        <button class="annotator-btn" id="btn-daniel" onclick="selectAnnotator('daniel')">
+          Daniel <small>#0–274</small>
+        </button>
+        <button class="annotator-btn" id="btn-roei" onclick="selectAnnotator('roei')">
+          Roei <small>#225–499</small>
+        </button>
+      </div>
+      <p style="color:var(--text-dim); font-size:11px; padding-left:38px; margin-top:8px;">
+        50 overlapping examples (#225–274) for inter-annotator agreement
+      </p>
+    </div>
+
+    <button class="btn-start disabled" id="btn-start" onclick="startAnnotating()">
+      Start Annotating →
+    </button>
+  </div>
+</div>
+
+<!-- ═══════════════ ANNOTATION SCREEN ═══════════════ -->
+<div id="annotate-screen" class="hidden" style="display:flex; flex-direction:column; min-height:100vh;">
+
+  <!-- Top Bar -->
+  <div class="topbar">
+    <div class="topbar-left">
+      <span style="font-size:18px;">📝</span>
+      <span class="topbar-brand">Gold Annotation</span>
+      <span class="topbar-badge" id="topbar-annotator"></span>
+    </div>
+    <div class="topbar-right">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <div class="progress-bar-bg"><div class="progress-bar-fill" id="progress-fill"></div></div>
+        <span class="progress-text" id="progress-text">0/0 (0%)</span>
+      </div>
+      <div class="divider-v"></div>
+      <span class="stat-text" id="stats-text">✅ 0 pos · ❌ 0 neg</span>
+      <button class="btn-export" onclick="exportAnnotations()">⬇ Export</button>
+      <button class="btn-icon" onclick="backToSetup()">⚙</button>
+    </div>
+  </div>
+
+  <!-- Main -->
+  <div class="main-layout">
+    <!-- Sidebar -->
+    <div class="sidebar">
+      <div>
+        <div class="sidebar-label">Filter</div>
+        <div class="filter-btns">
+          <button class="filter-btn active" data-filter="all" onclick="setFilter('all')">All</button>
+          <button class="filter-btn" data-filter="unannotated" onclick="setFilter('unannotated')">Todo</button>
+          <button class="filter-btn" data-filter="positive" onclick="setFilter('positive')">✅ Pos</button>
+          <button class="filter-btn" data-filter="negative" onclick="setFilter('negative')">❌ Neg</button>
+        </div>
+      </div>
+      <div>
+        <div class="sidebar-label">Jump to #</div>
+        <input class="jump-input" id="jump-input" type="number" placeholder="1–275"
+               onkeydown="if(event.key==='Enter')jumpToExample()">
+      </div>
+      <div class="shortcuts-section">
+        <div class="sidebar-label">Shortcuts</div>
+        <div class="shortcut-row"><span class="shortcut-key">← →</span><span class="shortcut-desc">Navigate</span></div>
+        <div class="shortcut-row"><span class="shortcut-key">0 / x</span><span class="shortcut-desc">No modif.</span></div>
+        <div class="shortcut-row"><span class="shortcut-key">1–4</span><span class="shortcut-desc">Set aspect</span></div>
+        <div class="shortcut-row"><span class="shortcut-key">s</span><span class="shortcut-desc">Toggle silver</span></div>
+        <div class="shortcut-row"><span class="shortcut-key">Select</span><span class="shortcut-desc">Add span</span></div>
+      </div>
+    </div>
+
+    <!-- Center -->
+    <div class="center-content">
+      <!-- Header -->
+      <div class="example-header">
+        <div class="example-header-left">
+          <span class="example-num" id="example-num">#1</span>
+          <span id="annotation-badge" class="hidden"></span>
+          <span class="meta-text" id="thread-id-text"></span>
+          <span class="meta-text" id="comment-pos-text"></span>
+        </div>
+        <div class="nav-btns">
+          <button class="nav-btn" id="btn-prev" onclick="goPrev()">← Prev</button>
+          <button class="nav-btn" id="btn-next" onclick="goNext()">Next →</button>
+        </div>
+      </div>
+
+      <!-- Hebrew Text -->
+      <div class="text-display" id="text-display" onmouseup="handleTextSelect()"></div>
+
+      <!-- Silver Reference -->
+      <div style="margin-bottom:18px;">
+        <button class="silver-toggle" id="silver-toggle" onclick="toggleSilver()">
+          <span class="silver-arrow" id="silver-arrow">▶</span>
+          <span id="silver-summary">Silver Label (teacher prediction)</span>
+        </button>
+        <div id="silver-panel" class="silver-panel hidden"></div>
+      </div>
+
+      <!-- Controls -->
+      <div class="controls-panel fade-in">
+        <!-- Binary -->
+        <div class="controls-label">Has Modification?</div>
+        <div class="binary-btns">
+          <button class="binary-btn" id="btn-no-mod" onclick="markNoMod()">
+            ❌ No Modification
+            <span class="hint">Press 0 or X</span>
+          </button>
+          <button class="binary-btn" id="btn-has-mod" onclick="markHasMod()">
+            ✅ Has Modification
+            <span class="hint">Select text above to add spans</span>
+          </button>
+        </div>
+
+        <!-- Aspect Selector -->
+        <div id="aspect-section">
+          <div class="controls-label">Active Aspect (for next span selection)</div>
+          <div class="aspect-btns">
+            <button class="aspect-btn sub-active" id="asp-SUBSTITUTION" onclick="setAspect('SUBSTITUTION')">
+              SUBSTITUTION<span class="key-hint">Press 1</span>
+            </button>
+            <button class="aspect-btn" id="asp-QUANTITY" onclick="setAspect('QUANTITY')">
+              QUANTITY<span class="key-hint">Press 2</span>
+            </button>
+            <button class="aspect-btn" id="asp-TECHNIQUE" onclick="setAspect('TECHNIQUE')">
+              TECHNIQUE<span class="key-hint">Press 3</span>
+            </button>
+            <button class="aspect-btn" id="asp-ADDITION" onclick="setAspect('ADDITION')">
+              ADDITION<span class="key-hint">Press 4</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Gold Spans -->
+        <div id="gold-spans-section" class="hidden">
+          <div class="controls-label" id="gold-spans-label">Gold Spans (0)</div>
+          <div id="gold-spans-list"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════════
+
+const ASPECTS = ["SUBSTITUTION", "QUANTITY", "TECHNIQUE", "ADDITION"];
+const ASPECT_CLASSES = {
+  SUBSTITUTION: "sub", QUANTITY: "qty", TECHNIQUE: "tech", ADDITION: "add"
+};
+const ANNOTATOR_SPLIT = {
+  daniel: { start: 0, end: 275 },
+  roei:   { start: 225, end: 500 }
+};
+
+let allExamples = [];
+let annotations = {};
+let annotator = "";
+let currentIdx = 0;
+let selectedAspect = "SUBSTITUTION";
+let goldSpans = [];
+let hasModification = null;
+let showSilver = false;
+let filterMode = "all";
+
+// ═══════════════════════════════════════════════════════════════════
+// SETUP
+// ═══════════════════════════════════════════════════════════════════
+
+function handleFileUpload(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    const text = ev.target.result;
+    const lines = text.trim().split("\n").filter(Boolean);
+    allExamples = [];
+    for (const line of lines) {
+      try { allExamples.push(JSON.parse(line)); } catch(e) {}
+    }
+    // Save to localStorage
+    try { localStorage.setItem("annot_data", JSON.stringify(allExamples)); } catch(e) {}
+
+    document.getElementById("upload-area").classList.add("hidden");
+    document.getElementById("upload-done").classList.remove("hidden");
+    document.getElementById("upload-count").textContent = allExamples.length;
+    document.getElementById("step1-num").style.background = "var(--accent-green)";
+    document.getElementById("step1-num").textContent = "✓";
+    document.getElementById("step2").style.opacity = "1";
+    document.getElementById("step2").style.pointerEvents = "auto";
+    checkReady();
+  };
+  reader.readAsText(file);
+}
+
+function selectAnnotator(name) {
+  annotator = name;
+  document.querySelectorAll(".annotator-btn").forEach(b => b.classList.remove("active"));
+  document.getElementById("btn-" + name).classList.add("active");
+  document.getElementById("step2-num").style.background = "var(--accent-green)";
+  document.getElementById("step2-num").textContent = "✓";
+
+  // Load saved annotations
+  try {
+    const saved = localStorage.getItem("annot_progress_" + name);
+    if (saved) annotations = JSON.parse(saved);
+    else annotations = {};
+  } catch(e) { annotations = {}; }
+
+  checkReady();
+}
+
+function checkReady() {
+  const btn = document.getElementById("btn-start");
+  if (allExamples.length > 0 && annotator) {
+    btn.className = "btn-start ready";
+    btn.disabled = false;
+  } else {
+    btn.className = "btn-start disabled";
+    btn.disabled = true;
+  }
+}
+
+function startAnnotating() {
+  if (!allExamples.length || !annotator) return;
+  document.getElementById("setup-screen").classList.add("hidden");
+  const annScreen = document.getElementById("annotate-screen");
+  annScreen.classList.remove("hidden");
+  annScreen.style.display = "flex";
+  document.getElementById("topbar-annotator").textContent = annotator;
+  currentIdx = 0;
+  renderExample();
+}
+
+function backToSetup() {
+  document.getElementById("annotate-screen").classList.add("hidden");
+  document.getElementById("annotate-screen").style.display = "none";
+  document.getElementById("setup-screen").classList.remove("hidden");
+}
+
+// Load data on page load
+(function init() {
+  try {
+    const saved = localStorage.getItem("annot_data");
+    if (saved) {
+      allExamples = JSON.parse(saved);
+      if (allExamples.length > 0) {
+        document.getElementById("upload-area").classList.add("hidden");
+        document.getElementById("upload-done").classList.remove("hidden");
+        document.getElementById("upload-count").textContent = allExamples.length;
+        document.getElementById("step1-num").style.background = "var(--accent-green)";
+        document.getElementById("step1-num").textContent = "✓";
+        document.getElementById("step2").style.opacity = "1";
+        document.getElementById("step2").style.pointerEvents = "auto";
+      }
+    }
+  } catch(e) {}
+})();
+
+// ═══════════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════════
+
+function myExamples() {
+  if (!annotator || !allExamples.length) return [];
+  const s = ANNOTATOR_SPLIT[annotator];
+  return allExamples.slice(s.start, s.end);
+}
+
+function filteredIndices() {
+  const ex = myExamples();
+  const indices = [];
+  for (let i = 0; i < ex.length; i++) {
+    const key = ex[i].thread_id || "idx_" + i;
+    const ann = annotations[key];
+    if (filterMode === "unannotated" && ann) continue;
+    if (filterMode === "positive" && (!ann || !ann.has_modification)) continue;
+    if (filterMode === "negative" && (!ann || ann.has_modification !== false)) continue;
+    indices.push(i);
+  }
+  return indices;
+}
+
+function saveAnnotations() {
+  try { localStorage.setItem("annot_progress_" + annotator, JSON.stringify(annotations)); } catch(e) {}
+}
+
+function getStats() {
+  const ex = myExamples();
+  let total = 0, pos = 0, neg = 0;
+  for (const e of ex) {
+    const key = e.thread_id || "";
+    const ann = annotations[key];
+    if (ann) {
+      total++;
+      if (ann.has_modification) pos++;
+      else neg++;
+    }
+  }
+  return { total, pos, neg, assigned: ex.length };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// RENDER
+// ═══════════════════════════════════════════════════════════════════
+
+function renderExample() {
+  const ex = myExamples();
+  if (!ex.length) return;
+  const example = ex[currentIdx];
+  if (!example) return;
+
+  const key = example.thread_id || "idx_" + currentIdx;
+  const ann = annotations[key];
+
+  // Load state
+  if (ann) {
+    hasModification = ann.has_modification;
+    goldSpans = ann.gold_modifications || [];
+  } else {
+    hasModification = null;
+    goldSpans = [];
+  }
+
+  // Header
+  document.getElementById("example-num").textContent = "#" + (currentIdx + 1);
+  document.getElementById("thread-id-text").textContent = example.thread_id || "";
+  document.getElementById("comment-pos-text").textContent = "(" + (example.comment_position || "top") + ")";
+
+  // Annotation badge
+  const badge = document.getElementById("annotation-badge");
+  if (ann) {
+    badge.classList.remove("hidden");
+    if (ann.has_modification) {
+      badge.className = "badge-pos";
+      badge.textContent = "✅ HAS MOD";
+    } else {
+      badge.className = "badge-neg";
+      badge.textContent = "❌ NO MOD";
+    }
+  } else {
+    badge.classList.add("hidden");
+  }
+
+  // Nav buttons
+  document.getElementById("btn-prev").disabled = currentIdx === 0;
+  document.getElementById("btn-next").disabled = currentIdx >= ex.length - 1;
+
+  // Text
+  renderText(example);
+
+  // Silver
+  const silverMods = example.modifications || [];
+  const silverHas = example.has_modification;
+  document.getElementById("silver-summary").textContent =
+    "Silver Label — " + (silverHas ? "✅ " + silverMods.length + " mod(s)" : "❌ No modification");
+  renderSilverPanel(silverMods);
+
+  // Binary buttons
+  const btnNo = document.getElementById("btn-no-mod");
+  const btnYes = document.getElementById("btn-has-mod");
+  btnNo.className = "binary-btn" + (hasModification === false ? " neg-active" : "");
+  btnYes.className = "binary-btn" + (hasModification === true ? " pos-active" : "");
+
+  // Gold spans
+  renderGoldSpans();
+
+  // Stats
+  updateStats();
+}
+
+function renderText(example) {
+  const text = example.text || example.comment_text || "";
+  const container = document.getElementById("text-display");
+
+  if (goldSpans.length === 0) {
+    container.textContent = text;
+    return;
+  }
+
+  // Build highlighted HTML
+  const positions = [];
+  for (const span of goldSpans) {
+    const idx = text.indexOf(span.span);
+    if (idx !== -1) {
+      positions.push({ start: idx, end: idx + span.span.length, aspect: span.aspect });
+    }
+  }
+  positions.sort((a, b) => a.start - b.start);
+
+  if (positions.length === 0) {
+    container.textContent = text;
+    return;
+  }
+
+  let html = "";
+  let lastEnd = 0;
+  for (const p of positions) {
+    if (p.start > lastEnd) {
+      html += escapeHtml(text.slice(lastEnd, p.start));
+    }
+    const cls = "highlight-" + ASPECT_CLASSES[p.aspect];
+    html += '<span class="' + cls + '" title="' + p.aspect + '">' + escapeHtml(text.slice(p.start, p.end)) + '</span>';
+    lastEnd = p.end;
+  }
+  if (lastEnd < text.length) {
+    html += escapeHtml(text.slice(lastEnd));
+  }
+  container.innerHTML = html;
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+function renderSilverPanel(mods) {
+  const panel = document.getElementById("silver-panel");
+  if (!mods || mods.length === 0) {
+    panel.innerHTML = '<span style="color:var(--text-dim); font-size:13px;">No modifications detected by teacher.</span>';
+    return;
+  }
+  let html = "";
+  for (const mod of mods) {
+    const cls = ASPECT_CLASSES[mod.aspect] || "sub";
+    const bgVar = "--" + cls + "-bg";
+    const textVar = "--" + cls + "-text";
+    html += '<div class="silver-mod">' +
+      '<span class="aspect-badge" style="background:var(' + bgVar + '); color:var(' + textVar + ');">' + mod.aspect + '</span>' +
+      '<span class="silver-span hebrew-text">"' + escapeHtml(mod.span) + '"</span>' +
+      (mod.confidence ? '<span class="silver-conf">(' + Math.round(mod.confidence * 100) + '%)</span>' : '') +
+    '</div>';
+  }
+  panel.innerHTML = html;
+}
+
+function renderGoldSpans() {
+  const section = document.getElementById("gold-spans-section");
+  const list = document.getElementById("gold-spans-list");
+  const label = document.getElementById("gold-spans-label");
+
+  if (goldSpans.length === 0) {
+    section.classList.add("hidden");
+    return;
+  }
+
+  section.classList.remove("hidden");
+  label.textContent = "Gold Spans (" + goldSpans.length + ")";
+
+  let html = "";
+  for (let i = 0; i < goldSpans.length; i++) {
+    const span = goldSpans[i];
+    const cls = ASPECT_CLASSES[span.aspect] || "sub";
+    const bgVar = "--" + cls + "-bg";
+    const textVar = "--" + cls + "-text";
+    html += '<div class="gold-span-row">' +
+      '<span class="aspect-badge" style="background:var(' + bgVar + '); color:var(' + textVar + ');">' + span.aspect + '</span>' +
+      '<span class="gold-span-text hebrew-text">' + escapeHtml(span.span) + '</span>' +
+      '<select class="gold-span-select" onchange="changeSpanAspect(' + i + ', this.value)">';
+    for (const a of ASPECTS) {
+      html += '<option value="' + a + '"' + (a === span.aspect ? ' selected' : '') + '>' + a + '</option>';
+    }
+    html += '</select>' +
+      '<button class="btn-remove-span" onclick="removeSpan(' + i + ')">✕</button>' +
+    '</div>';
+  }
+  list.innerHTML = html;
+}
+
+function updateStats() {
+  const s = getStats();
+  const pct = s.assigned > 0 ? ((s.total / s.assigned) * 100).toFixed(1) : "0.0";
+  document.getElementById("progress-fill").style.width = pct + "%";
+  document.getElementById("progress-text").textContent = s.total + "/" + s.assigned + " (" + pct + "%)";
+  document.getElementById("stats-text").textContent = "✅ " + s.pos + " pos · ❌ " + s.neg + " neg";
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ACTIONS
+// ═══════════════════════════════════════════════════════════════════
+
+function saveCurrentAnnotation(hasMod, spans) {
+  const ex = myExamples();
+  const example = ex[currentIdx];
+  if (!example) return;
+  const key = example.thread_id || "idx_" + currentIdx;
+  annotations[key] = {
+    thread_id: example.thread_id,
+    comment_text: example.text || example.comment_text || "",
+    comment_position: example.comment_position || "top",
+    has_modification: hasMod,
+    gold_modifications: hasMod ? spans : [],
+    annotator: annotator,
+    annotated_at: new Date().toISOString()
+  };
+  saveAnnotations();
+}
+
+function markNoMod() {
+  hasModification = false;
+  goldSpans = [];
+  saveCurrentAnnotation(false, []);
+  renderExample();
+  setTimeout(goNext, 180);
+}
+
+function markHasMod() {
+  hasModification = true;
+  saveCurrentAnnotation(true, goldSpans);
+  renderExample();
+}
+
+function handleTextSelect() {
+  const selection = window.getSelection();
+  const text = selection.toString().trim();
+  if (!text || text.length < 2) return;
+
+  const container = document.getElementById("text-display");
+  if (!selection.rangeCount) return;
+  const range = selection.getRangeAt(0);
+  if (!container.contains(range.commonAncestorContainer)) return;
+
+  goldSpans.push({ span: text, aspect: selectedAspect });
+  hasModification = true;
+  saveCurrentAnnotation(true, goldSpans);
+  selection.removeAllRanges();
+  renderExample();
+}
+
+function removeSpan(idx) {
+  goldSpans.splice(idx, 1);
+  saveCurrentAnnotation(hasModification, goldSpans);
+  renderExample();
+}
+
+function changeSpanAspect(idx, newAspect) {
+  goldSpans[idx].aspect = newAspect;
+  saveCurrentAnnotation(true, goldSpans);
+  renderExample();
+}
+
+function setAspect(aspect) {
+  selectedAspect = aspect;
+  document.querySelectorAll(".aspect-btn").forEach(b => {
+    b.className = "aspect-btn";
+  });
+  const cls = ASPECT_CLASSES[aspect];
+  document.getElementById("asp-" + aspect).classList.add(cls + "-active");
+}
+
+function toggleSilver() {
+  showSilver = !showSilver;
+  document.getElementById("silver-panel").classList.toggle("hidden", !showSilver);
+  document.getElementById("silver-arrow").classList.toggle("open", showSilver);
+}
+
+function goNext() {
+  const ex = myExamples();
+  if (currentIdx < ex.length - 1) {
+    currentIdx++;
+    renderExample();
+  }
+}
+
+function goPrev() {
+  if (currentIdx > 0) {
+    currentIdx--;
+    renderExample();
+  }
+}
+
+function setFilter(mode) {
+  filterMode = mode;
+  document.querySelectorAll(".filter-btn").forEach(b => {
+    b.classList.toggle("active", b.dataset.filter === mode);
+  });
+  // Jump to first matching
+  const indices = filteredIndices();
+  if (indices.length > 0 && !indices.includes(currentIdx)) {
+    currentIdx = indices[0];
+  }
+  renderExample();
+}
+
+function jumpToExample() {
+  const input = document.getElementById("jump-input");
+  const idx = parseInt(input.value) - 1;
+  const ex = myExamples();
+  if (idx >= 0 && idx < ex.length) {
+    currentIdx = idx;
+    input.value = "";
+    renderExample();
+  }
+}
+
+function exportAnnotations() {
+  const lines = Object.values(annotations)
+    .map(a => JSON.stringify(a))
+    .join("\n");
+  const blob = new Blob([lines], { type: "application/jsonl" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "gold_" + annotator + ".jsonl";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// KEYBOARD SHORTCUTS
+// ═══════════════════════════════════════════════════════════════════
+
+document.addEventListener("keydown", function(e) {
+  if (document.getElementById("annotate-screen").classList.contains("hidden")) return;
+  const tag = e.target.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+  switch(e.key) {
+    case "ArrowRight": case "n": e.preventDefault(); goNext(); break;
+    case "ArrowLeft":  case "p": e.preventDefault(); goPrev(); break;
+    case "0": case "x": e.preventDefault(); markNoMod(); break;
+    case "1": e.preventDefault(); setAspect("SUBSTITUTION"); break;
+    case "2": e.preventDefault(); setAspect("QUANTITY"); break;
+    case "3": e.preventDefault(); setAspect("TECHNIQUE"); break;
+    case "4": e.preventDefault(); setAspect("ADDITION"); break;
+    case "s": e.preventDefault(); toggleSilver(); break;
+  }
+});
+</script>
+</body>
+</html>
