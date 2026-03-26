@@ -91,7 +91,7 @@ class CRFDataset(Dataset):
         thread_id:        str
     """
 
-    def __init__(self, path, max_len=128):
+    def __init__(self, path, max_len=128, neg_ratio=None):
         self.examples = []
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
@@ -103,6 +103,16 @@ class CRFDataset(Dataset):
                     self.examples.append(ex)
                 except json.JSONDecodeError:
                     continue
+        # Downsample negatives if ratio specified
+        if neg_ratio is not None and neg_ratio > 0:
+            import random as _random
+            positives = [e for e in self.examples if e.get("has_modification")]
+            negatives = [e for e in self.examples if not e.get("has_modification")]
+            max_neg = int(len(positives) * neg_ratio)
+            _random.seed(42)
+            negatives = _random.sample(negatives, min(max_neg, len(negatives)))
+            self.examples = positives + negatives
+            _random.shuffle(self.examples)
         self.max_len = max_len
 
     def __len__(self):
@@ -239,7 +249,7 @@ def train(args):
         print(f"ERROR: {val_path} not found")
         return
 
-    train_ds = CRFDataset(train_path, max_len=args.max_len)
+    train_ds = CRFDataset(train_path, max_len=args.max_len, neg_ratio=args.neg_ratio)
     val_ds = CRFDataset(val_path, max_len=args.max_len)
 
     train_loader = DataLoader(
@@ -486,6 +496,9 @@ def main():
     parser.add_argument("--patience", type=int, default=3,
                         help="Early stopping patience (epochs without improvement)")
     parser.add_argument("--seed", type=int, default=42)
+
+    parser.add_argument("--neg-ratio", type=float, default=None,
+                        help="Neg:pos downsampling ratio (e.g. 3.0)")
 
     # WandB (optional)
     parser.add_argument("--wandb", action="store_true",

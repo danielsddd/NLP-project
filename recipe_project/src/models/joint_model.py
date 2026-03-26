@@ -21,7 +21,7 @@ Usage:
 
     model = BertCRFModel(
         model_name="dicta-il/dictabert",
-        num_labels=9,   # BIO: O + 4 aspects × (B, I)
+        num_labels=9,   # BIO: O + 4 aspects x (B, I)
         dropout_rate=0.1,
     )
 
@@ -29,7 +29,7 @@ Usage:
     loss = model(input_ids, attention_mask, labels=labels)
 
     # Inference: returns list of predicted tag sequences
-    predictions = model(input_ids, attention_mask)  # no labels → inference mode
+    predictions = model(input_ids, attention_mask)  # no labels -> inference mode
 """
 
 import torch
@@ -42,7 +42,7 @@ class BertCRFModel(nn.Module):
     """BERT encoder + Linear + CRF for BIO sequence tagging.
 
     The CRF layer learns transition probabilities between BIO tags,
-    preventing invalid sequences like O → I-SUBSTITUTION. This is
+    preventing invalid sequences like O -> I-SUBSTITUTION. This is
     especially important for Hebrew text where tokenization can split
     morphologically rich words into subwords.
 
@@ -72,7 +72,7 @@ class BertCRFModel(nn.Module):
         self.bert = AutoModel.from_pretrained(model_name)
         hidden_size = self.bert.config.hidden_size  # typically 768
 
-        # Projection: hidden → num_labels (emission scores for CRF)
+        # Projection: hidden -> num_labels (emission scores for CRF)
         self.dropout = nn.Dropout(dropout_rate)
         self.classifier = nn.Linear(hidden_size, num_labels)
 
@@ -125,9 +125,9 @@ class BertCRFModel(nn.Module):
             Returns list of predicted tag sequences via Viterbi decoding.
 
         Args:
-            input_ids: (batch, seq_len) — tokenized input
-            attention_mask: (batch, seq_len) — 1 for real tokens, 0 for padding
-            labels: (batch, seq_len) — BIO label IDs, -100 for special tokens.
+            input_ids: (batch, seq_len) -- tokenized input
+            attention_mask: (batch, seq_len) -- 1 for real tokens, 0 for padding
+            labels: (batch, seq_len) -- BIO label IDs, -100 for special tokens.
                 If None, runs inference (Viterbi decoding).
 
         Returns:
@@ -137,7 +137,7 @@ class BertCRFModel(nn.Module):
         emissions = self._get_emissions(input_ids, attention_mask)
 
         if labels is not None:
-            # ── Training: compute CRF NLL loss ───────────────────────
+            # Training: compute CRF NLL loss
             # CRF cannot handle -100 (ignore index). We need to:
             # 1. Create a clean label tensor replacing -100 with 0 (O tag)
             # 2. Create a CRF mask that excludes -100 positions
@@ -146,12 +146,12 @@ class BertCRFModel(nn.Module):
 
             # CRITICAL FIX: pytorch-crf requires mask[:, 0] == True for every
             # sequence in the batch. [CLS] always has label=-100 which sets
-            # crf_mask[:, 0] = False → "mask of the first timestep must all be on"
-            # Force it True and set the label to O (0). The [CLS] token's
-            # contribution to the CRF path is harmless since it always predicts O.
+            # crf_mask[:, 0] = False -> "mask of the first timestep must all be on"
+            # Force it True and set label to O (0). The [CLS] contribution
+            # to the CRF path is harmless since it will always predict O.
             crf_mask[:, 0] = True
 
-            # Replace -100 with 0 (O tag) — CRF needs valid indices everywhere
+            # Replace -100 with 0 (O tag) -- CRF needs valid indices everywhere
             crf_labels[crf_labels == -100] = 0
 
             log_likelihood = self.crf(
@@ -164,7 +164,7 @@ class BertCRFModel(nn.Module):
             return loss
 
         else:
-            # ── Inference: Viterbi decoding ──────────────────────────
+            # Inference: Viterbi decoding
             crf_mask = attention_mask.bool()
             best_paths = self.crf.decode(emissions, mask=crf_mask)
             return best_paths  # list of lists of label IDs
@@ -173,6 +173,4 @@ class BertCRFModel(nn.Module):
 # =============================================================================
 # Backward-compatible alias for existing import statements
 # =============================================================================
-# If your train_joint.py imports JointModelWithCRF, this alias ensures
-# it still works after the simplification.
 JointModelWithCRF = BertCRFModel
