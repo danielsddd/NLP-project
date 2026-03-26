@@ -1,44 +1,100 @@
 #!/bin/bash
-#SBATCH --job-name=dicta_best
+# =============================================================================
+# SLURM Script: Train DictaBERT-Large (Softmax + Focal Loss)
+# =============================================================================
+# Model: dicta-il/dictabert-large
+# Uses: train_student.py with class-weighted focal loss
+# NOTE: batch-size=8 to avoid OOM on RTX 3090 (24GB)
+# Submit: sbatch scripts/slurm/train_dicta_best.sbatch
+# =============================================================================
+
+#SBATCH --job-name=dicta_lg
 #SBATCH --partition=studentkillable
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="geforce_rtx_2080|geforce_rtx_3090|a5000|a6000|l40s"
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
-#SBATCH --time=06:00:00
-#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/%u/recipe_modification_extraction/logs/slurm_outputs/%j_dicta_best.out
-#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/%u/recipe_modification_extraction/logs/slurm_outputs/%j_dicta_best.err
+#SBATCH --mem=24G
+#SBATCH --time=10:00:00
+#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/%u/logs/%j_dicta_large.out
+#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/%u/logs/%j_dicta_large.err
 
-PROJ=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2
-source $PROJ/anaconda3/etc/profile.d/conda.sh
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+USER_DIR="/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2"
+PROJECT_DIR="simanovsky2_DIR/recipe_modification_extraction/recipe_project"
+
+MODEL="dicta-il/dictabert-large"
+OUTPUT_DIR="models/checkpoints/dictabert_large"
+
+echo "=========================================="
+echo "TRAINING: DictaBERT-Large (Softmax + Focal)"
+echo "=========================================="
+echo "Job ID:    $SLURM_JOB_ID"
+echo "Node:      $(hostname)"
+echo "Start:     $(date)"
+echo "Model:     $MODEL"
+echo "Output:    $OUTPUT_DIR"
+echo "NOTE:      batch-size=8 (large model, OOM safety)"
+echo "=========================================="
+
+# Activate environment
+source simanovsky2_DIR/anaconda3/etc/profile.d/conda.sh
 conda activate recipe_nlp
-export HF_HOME=$PROJ/.cache/huggingface
+
+# Set cache paths (avoid home quota)
+export HF_HOME=simanovsky2_DIR/.cache/huggingface
+export TRANSFORMERS_CACHE=$HF_HOME
+export HF_DATASETS_CACHE=$HF_HOME/datasets
 export TOKENIZERS_PARALLELISM=false
-cd $PROJ/recipe_modification_extraction
 
-MODEL="dicta-il/dictabert"
-DATA_OUT="data/processed_dictabert"
+cd $PROJECT_DIR
 
-echo "=== DictaBERT BEST: balanced weights + downsample 2:1 + lr=3e-5 ==="
-echo "Node: $(hostname), Start: $(date)"
-nvidia-smi --query-gpu=name,memory.total --format=csv
+# Show GPU info
+nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv
+echo "=========================================="
 
-# Preprocess (skip if already done)
-if [ ! -f "$DATA_OUT/train.jsonl" ]; then
-    echo "Preprocessing with DictaBERT tokenizer..."
-    python -m src.preprocessing.prepare_data \
-        --input data/silver_labels/teacher_output.jsonl \
-        --output-dir $DATA_OUT \
-        --model "$MODEL" \
-        --scheme BIO
+# Verify data
+if [ ! -f "data/processed/train_merged.jsonl" ]; then
+    echo "ERROR: data/processed/train_merged.jsonl not found!"
+    echo "Run preprocessing first."
+    exit 1
 fi
 
-# Aggressive: balanced weights + 2:1 downsample + lr=3e-5
+echo ""
+echo "Data files:"
+wc -l data/processed/train_merged.jsonl data/processed/val.jsonl
+echo ""
+
+# Create output dir
+mkdir -p $OUTPUT_DIR
+
+# Train — batch-size 8 for large model (avoids OOM on 24GB GPUs)
 python -m src.models.train_student \
     --model "$MODEL" \
-    --data-dir $DATA_OUT \
-    --output-dir models/checkpoints/dictabert_best \
-    --epochs 20 --batch-size 16 --lr 3e-5 --warmup 0.1 --seed 42 --fp16 \
-    --class-weights balanced --neg-ratio 2.0 --patience 5
+    --data-dir data/processed \
+    --output-dir "$OUTPUT_DIR" \
+    --epochs 10 \
+    --batch-size 4 \
+    --lr 1e-5 \
+    --seed 42 \
+    --neg-ratio 3.0 \
+    --class-weights sqrt \
+    --fp16
 
-echo "=== DONE: $(date) ==="
+EXIT_CODE=$?
+if [ $EXIT_CODE -eq 0 ]; then
+    echo ""
+    echo "=========================================="
+    echo "TRAINING COMPLETED SUCCESSFULLY"
+    echo "Model saved to: $OUTPUT_DIR/best_model"
+    echo "=========================================="
+else
+    echo ""
+    echo "=========================================="
+    echo "TRAINING FAILED (exit code: $EXIT_CODE)"
+    echo "=========================================="
+    exit $EXIT_CODE
+fi
+
+echo "End Time: $(date)"
+echo "=========================================="

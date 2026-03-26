@@ -1,42 +1,98 @@
 #!/bin/bash
-#SBATCH --job-name=mbert_v2
+# =============================================================================
+# SLURM Script: Train mBERT (Softmax + Focal Loss)
+# =============================================================================
+# Model: bert-base-multilingual-cased
+# Uses: train_student.py with class-weighted focal loss
+# Submit: sbatch scripts/slurm/train_mbert.sbatch
+# =============================================================================
+
+#SBATCH --job-name=mbert
 #SBATCH --partition=studentkillable
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="geforce_rtx_2080|geforce_rtx_3090|a5000|a6000|l40s"
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
-#SBATCH --time=06:00:00
-#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/%u/recipe_modification_extraction/logs/slurm_outputs/%j_mbert_v2.out
-#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/%u/recipe_modification_extraction/logs/slurm_outputs/%j_mbert_v2.err
+#SBATCH --mem=24G
+#SBATCH --time=08:00:00
+#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/%u/logs/%j_mbert.out
+#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/%u/logs/%j_mbert.err
 
-PROJ=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2
-source $PROJ/anaconda3/etc/profile.d/conda.sh
-conda activate recipe_nlp
-export HF_HOME=$PROJ/.cache/huggingface
-export TOKENIZERS_PARALLELISM=false
-cd $PROJ/recipe_modification_extraction
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+USER_DIR="/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2"
+PROJECT_DIR="simanovsky2_DIR/recipe_modification_extraction/recipe_project"
 
 MODEL="bert-base-multilingual-cased"
-DATA_OUT="data/processed_mbert"
+OUTPUT_DIR="models/checkpoints/mbert"
 
-echo "=== mBERT v2 (correct tokenizer) ==="
-echo "Node: $(hostname), Start: $(date)"
-nvidia-smi --query-gpu=name,memory.total --format=csv
+echo "=========================================="
+echo "TRAINING: mBERT (Softmax + Focal Loss)"
+echo "=========================================="
+echo "Job ID:    $SLURM_JOB_ID"
+echo "Node:      $(hostname)"
+echo "Start:     $(date)"
+echo "Model:     $MODEL"
+echo "Output:    $OUTPUT_DIR"
+echo "=========================================="
 
-# Step 1: Preprocess with mBERT tokenizer
-echo "Preprocessing with mBERT tokenizer..."
-python -m src.preprocessing.prepare_data \
-    --input data/silver_labels/teacher_output.jsonl \
-    --output-dir $DATA_OUT \
-    --model "$MODEL" \
-    --scheme BIO
+# Activate environment
+source simanovsky2_DIR/anaconda3/etc/profile.d/conda.sh
+conda activate recipe_nlp
 
-# Step 2: Train
-echo "Training mBERT..."
+# Set cache paths (avoid home quota)
+export HF_HOME=simanovsky2_DIR/.cache/huggingface
+export TRANSFORMERS_CACHE=$HF_HOME
+export HF_DATASETS_CACHE=$HF_HOME/datasets
+export TOKENIZERS_PARALLELISM=false
+
+cd $PROJECT_DIR
+
+# Show GPU info
+nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv
+echo "=========================================="
+
+# Verify data
+if [ ! -f "data/processed/train_merged.jsonl" ]; then
+    echo "ERROR: data/processed/train_merged.jsonl not found!"
+    echo "Run preprocessing first."
+    exit 1
+fi
+
+echo ""
+echo "Data files:"
+wc -l data/processed/train_merged.jsonl data/processed/val.jsonl
+echo ""
+
+# Create output dir
+mkdir -p $OUTPUT_DIR
+
+# Train
 python -m src.models.train_student \
     --model "$MODEL" \
-    --data-dir $DATA_OUT \
-    --output-dir models/baselines/mbert_v2 \
-    --epochs 10 --batch-size 16 --lr 2e-5 --warmup 0.1 --seed 42 --fp16
+    --data-dir data/processed \
+    --output-dir "$OUTPUT_DIR" \
+    --epochs 10 \
+    --batch-size 16 \
+    --lr 2e-5 \
+    --seed 42 \
+    --neg-ratio 3.0 \
+    --class-weights sqrt \
+    --fp16
 
-echo "=== DONE: $(date) ==="
+EXIT_CODE=$?
+if [ $EXIT_CODE -eq 0 ]; then
+    echo ""
+    echo "=========================================="
+    echo "TRAINING COMPLETED SUCCESSFULLY"
+    echo "Model saved to: $OUTPUT_DIR/best_model"
+    echo "=========================================="
+else
+    echo ""
+    echo "=========================================="
+    echo "TRAINING FAILED (exit code: $EXIT_CODE)"
+    echo "=========================================="
+    exit $EXIT_CODE
+fi
+
+echo "End Time: $(date)"
+echo "=========================================="

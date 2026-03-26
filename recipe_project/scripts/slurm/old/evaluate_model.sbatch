@@ -19,8 +19,8 @@
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-USER_DIR="/vol/joberant_nobck/data/NLP_368307701_2526a/$USER"
-PROJECT_DIR="$USER_DIR/recipe_modification_extraction"
+USER_DIR="/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2"
+PROJECT_DIR="simanovsky2_DIR/recipe_modification_extraction"
 
 ALEPHBERT_MODEL="models/checkpoints/student/best_model"
 MBERT_MODEL="models/baselines/mbert/best_model"
@@ -34,11 +34,11 @@ echo "Start Time: $(date)"
 echo "=========================================="
 
 # Activate conda environment
-source $USER_DIR/anaconda3/etc/profile.d/conda.sh
+source simanovsky2_DIR/anaconda3/etc/profile.d/conda.sh
 conda activate recipe_nlp
 
 # Set HuggingFace cache paths
-export HF_HOME=$USER_DIR/.cache/huggingface
+export HF_HOME=simanovsky2_DIR/.cache/huggingface
 export TRANSFORMERS_CACHE=$HF_HOME
 export TOKENIZERS_PARALLELISM=false
 

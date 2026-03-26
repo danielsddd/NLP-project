@@ -1,0 +1,75 @@
+#!/bin/bash
+# =============================================================================
+# Model: hebert | Variant: P5_thread_aware_no_enriched
+# =============================================================================
+
+#SBATCH --job-name=hebert_P5_threa
+#SBATCH --partition=studentkillable
+#SBATCH --gres=gpu:1
+#SBATCH --constraint="geforce_rtx_3090|a5000|a6000"
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=24G
+#SBATCH --time=08:00:00
+#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/$USER/logs/slurm_output/hebert/%j_P5_thread_aware_no_enriched.out
+#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/$USER/logs/slurm_output/hebert/%j_P5_thread_aware_no_enriched.err
+
+# --- Environment ---
+USER_DIR="/vol/joberant_nobck/data/NLP_368307701_2526a/$USER"
+PROJECT_DIR="$USER_DIR/recipe_modification_extraction/recipe_project"
+source $USER_DIR/anaconda3/etc/profile.d/conda.sh
+conda activate recipe_nlp
+export HF_HOME=$USER_DIR/.cache/huggingface
+export TRANSFORMERS_CACHE=$HF_HOME
+export HF_DATASETS_CACHE=$HF_HOME/datasets
+export TOKENIZERS_PARALLELISM=false
+cd $PROJECT_DIR
+
+echo "=================================================="
+echo "MODEL:   hebert"
+echo "VARIANT: P5_thread_aware_no_enriched"
+echo "HF:      avichr/heBERT"
+echo "OUTPUT:  models/checkpoints/hebert/P5_thread_aware_no_enriched"
+echo "Job ID:  $SLURM_JOB_ID"
+echo "Node:    $(hostname)"
+echo "Start:   $(date)"
+echo "=================================================="
+nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv 2>/dev/null || true
+echo "=================================================="
+
+# --- Data Check ---
+if [ ! -f "data/processed_thread_aware_no_enriched/train_merged.jsonl" ]; then
+    echo "ERROR: data/processed_thread_aware_no_enriched/train_merged.jsonl not found!"
+    echo "Run the corresponding preprocessing script first."
+    exit 1
+fi
+echo "Data:"; wc -l data/processed_thread_aware_no_enriched/train_merged.jsonl data/processed_thread_aware_no_enriched/val.jsonl
+echo ""
+
+# --- P5: + Weights + Focal + Thread-aware + NO enriched (isolation test) ---
+mkdir -p models/checkpoints/hebert/P5_thread_aware_no_enriched
+
+python -m src.models.train_student \
+    --model "avichr/heBERT" \
+    --data-dir data/processed_thread_aware_no_enriched \
+    --output-dir models/checkpoints/hebert/P5_thread_aware_no_enriched \
+    --epochs 10 \
+    --batch-size 16 \
+    --lr 2e-5 \
+    --seed 42 \
+    --fp16 \
+    --class-weights balanced \
+    --focal-loss \
+    --focal-gamma 2.0
+
+EXIT_CODE=$?
+if [ $EXIT_CODE -eq 0 ]; then
+    echo ""; echo "=================================================="
+    echo "SUCCESS — saved to: models/checkpoints/hebert/P5_thread_aware_no_enriched"
+    echo "=================================================="
+    for f in models/checkpoints/hebert/P5_thread_aware_no_enriched/training_summary.json models/checkpoints/hebert/P5_thread_aware_no_enriched/all_results.json; do
+        [ -f "$f" ] && echo "--- $f ---" && cat "$f" && echo ""
+    done
+else
+    echo "FAILED (exit code: $EXIT_CODE)"; exit $EXIT_CODE
+fi
+echo "End: $(date)"; echo "=================================================="
