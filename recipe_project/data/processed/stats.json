@@ -1,0 +1,234 @@
+{
+  "version": "v5",
+  "scheme": "BIO",
+  "num_labels": 9,
+  "model": "onlplab/alephbert-base",
+  "max_length": 128,
+  "seed": 42,
+  "threads_loaded": 10058,
+  "total_examples": 10157,
+  "positive_examples": 1328,
+  "negative_examples": 8829,
+  "splits": {
+    "train": 8129,
+    "val": 1016,
+    "test": 1012
+  },
+  "splits_positive": {
+    "train": 1066,
+    "val": 134,
+    "test": 128
+  },
+  "span_alignment": {
+    "total_spans": 1804,
+    "aligned": 1666,
+    "hallucinated": 123,
+    "truncated": 15,
+    "alignment_rate": 0.9235,
+    "hallucination_rate": 0.0682
+  },
+  "aspect_entity_counts": {
+    "SUBSTITUTION": 606,
+    "TECHNIQUE": 528,
+    "ADDITION": 305,
+    "QUANTITY": 227
+  },
+  "label_distribution_train": {
+    "B-ADDITION": 245,
+    "B-QUANTITY": 179,
+    "B-SUBSTITUTION": 492,
+    "B-TECHNIQUE": 424,
+    "I-ADDITION": 688,
+    "I-QUANTITY": 648,
+    "I-SUBSTITUTION": 1607,
+    "I-TECHNIQUE": 2151,
+    "O": 109940
+  },
+  "failed_spans": [
+    {
+      "thread_id": "UgwY8ZniRVTBwi-Grjx4AaABAg",
+      "span": "לirק אחר",
+      "aspect": "SUBSTITUTION",
+      "source": "top"
+    },
+    {
+      "thread_id": "UgwQFbXpUEgFZ7JUjoN4AaABAg",
+      "span": "דובדבנים מקומפוט",
+      "aspect": "SUBSTITUTION",
+      "source": "reply_1"
+    },
+    {
+      "thread_id": "UgwPGGVBmio5LEhiYsN4AaABAg",
+      "span": "קוביות של חזה עוף",
+      "aspect": "ADDITION",
+      "source": "reply_1"
+    },
+    {
+      "thread_id": "UgzOSJvJ3n7NW7MThv54AaABAg",
+      "span": "קמח תפוח אדמה",
+      "aspect": "SUBSTITUTION",
+      "source": "reply_1"
+    },
+    {
+      "thread_id": "Ugwf0GQPeVgJzJFl-Ht4AaABAg",
+      "span": "קמח כוסמין",
+      "aspect": "SUBSTITUTION",
+      "source": "reply_1"
+    },
+    {
+      "thread_id": "UgzXdvqqDjzQ825KxFh4AaABAg",
+      "span": "אפשר בתנור",
+      "aspect": "TECHNIQUE",
+      "source": "reply_1"
+    },
+    {
+      "thread_id": "UgxDURHBAbosuBXM_MV4AaABAg",
+      "span": "חותכת הכל ורוחצת היטב מהחול ומבשלת עד שרך ואז שוטפת במים קרי",
+      "aspect": "TECHNIQUE",
+      "source": "top"
+    },
+    {
+      "thread_id": "UgxtADhOYu04FAH4EyN4AaABAg",
+      "span": "פירורי לחם",
+      "aspect": "SUBSTITUTION",
+      "source": "reply_1"
+    },
+    {
+      "thread_id": "Ugw3jP4ks2BEEW4ktax4AaABAg",
+      "span": "תבלין שפים",
+      "aspect": "ADDITION",
+      "source": "reply_1"
+    },
+    {
+      "thread_id": "Ugw3jP4ks2BEEW4ktax4AaABAg",
+      "span": "מרק עוף",
+      "aspect": "ADDITION",
+      "source": "reply_1"
+    },
+    {
+      "thread_id": "UgzYzA13snqU9rtm3W94AaABAg",
+      "span": "כיסונים ממולאים תפוחי אדמה",
+      "aspect": "SUBSTITUTION",
+      "source": "reply_2"
+    },
+    {
+      "thread_id": "Ugxvs8qhDL9n7yCDGwN4AaABAg",
+      "span": "חזה עוף",
+      "aspect": "SUBSTITUTION",
+      "source": "reply_2"
+    },
+    {
+      "thread_id": "UgzwNPBqNIaVT5a2duR4AaABAg",
+      "span": "רק על הגז",
+      "aspect": "TECHNIQUE",
+      "source": "reply_1"
+    },
+    {
+      "thread_id": "UgwtmnX8Q9h1H-LGUHN4AaABAg",
+      "span": "פחות כמויות הבצל",
+      "aspect": "QUANTITY",
+      "source": "top"
+    },
+    {
+      "thread_id": "Ugz5ObGYKNSDrpu-TNZ4AaABAg",
+      "span": "צ׳אנקים של חזה עוף",
+      "aspect": "ADDITION",
+      "source": "reply_1"
+    },
+    {
+      "thread_id": "Ugxasmw_hOvXddjN-b94AaABAg",
+      "span": "שלוש כילו",
+      "aspect": "QUANTITY",
+      "source": "top"
+    },
+    {
+      "thread_id": "UgwEsTiuJmwxYMlcRop4AaABAg",
+      "span": "להתחיל עם האטריות+אורז, מניח בצד וממשיך עם השאר",
+      "aspect": "TECHNIQUE",
+      "source": "top"
+    },
+    {
+      "thread_id": "Ugz34RsTN79ey2oIxid4AaABAg",
+      "span": "טופו במקום עוף",
+      "aspect": "SUBSTITUTION",
+      "source": "reply_1"
+    },
+    {
+      "thread_id": "UgyI1xynEwEffM68u3F4AaABAg",
+      "span": "תמצית וניל",
+      "aspect": "ADDITION",
+      "source": "reply_1"
+    },
+    {
+      "thread_id": "UgwvkptrBxsyYJcu0fV4AaABAg",
+      "span": "חמאת בוטנים",
+      "aspect": "SUBSTITUTION",
+      "source": "reply_1"
+    },
+    {
+      "thread_id": "UgyxKu2C06gz7jU3fC54AaABAg",
+      "span": "שיבולת שועל דקה",
+      "aspect": "SUBSTITUTION",
+      "source": "reply_1"
+    },
+    {
+      "thread_id": "UgzyK0KyOMCzzhmybHR4AaABAg",
+      "span": "כמות כפולה של שיבולת שועל",
+      "aspect": "QUANTITY",
+      "source": "reply_1"
+    },
+    {
+      "thread_id": "UgzQ7w73ap_mRwdfi994AaABAg",
+      "span": "ללא המיץ תפוזים",
+      "aspect": "SUBSTITUTION",
+      "source": "top"
+    },
+    {
+      "thread_id": "Ugz8OQQ_J8J9LZJZtg14AaABAg",
+      "span": "להחליף חצי כוס בשקדים מולבנים טחון",
+      "aspect": "SUBSTITUTION",
+      "source": "top"
+    },
+    {
+      "thread_id": "UgzYGzF0PiMihckt4GJ4AaABAg",
+      "span": "נטורינה",
+      "aspect": "SUBSTITUTION",
+      "source": "reply_1"
+    },
+    {
+      "thread_id": "UgwKF4F_tDb6nNWT0BV4AaABAg",
+      "span": "להכניס לתנור לעוד 10 דק",
+      "aspect": "TECHNIQUE",
+      "source": "reply_1"
+    },
+    {
+      "thread_id": "Ugx-cCC9zJxsHs7rlMl4AaABAg",
+      "span": "עם פסטה",
+      "aspect": "SUBSTITUTION",
+      "source": "reply_1"
+    },
+    {
+      "thread_id": "UgzqTpoVBFQFboxaVUJ4AaABAg",
+      "span": "קורנפלור במקום קמח תפו\"א",
+      "aspect": "SUBSTITUTION",
+      "source": "reply_1"
+    },
+    {
+      "thread_id": "UgzoxzxmIaKJJC5JH2x4AaABAg",
+      "span": "מילוי פרווה",
+      "aspect": "SUBSTITUTION",
+      "source": "reply_1"
+    },
+    {
+      "thread_id": "UgyULbRdqLdejUMNZKZ4AaABAg",
+      "span": "קמח עדשים",
+      "aspect": "SUBSTITUTION",
+      "source": "reply_1"
+    }
+  ],
+  "data_leakage_check": {
+    "train_val_overlap": 0,
+    "train_test_overlap": 0,
+    "val_test_overlap": 0
+  }
+}

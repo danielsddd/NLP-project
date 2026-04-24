@@ -1,0 +1,72 @@
+{
+  "config": {
+    "original_path": "data/silver_labels/teacher_output.jsonl",
+    "enriched_path": "data/silver_labels/threads_positives_focus_labeled.jsonl",
+    "model": "dicta-il/dictabert",
+    "scheme": "BIO",
+    "downsample_ratio": 3.0,
+    "unanimous_only": false,
+    "data_fraction": 1.0,
+    "seed": 42
+  },
+  "counts": {
+    "original_threads": 10058,
+    "enriched_threads": 5016,
+    "train_examples": 9976,
+    "val_examples": 1525,
+    "test_examples": 1519,
+    "train_positive": 2494,
+    "val_positive": 201,
+    "test_positive": 194,
+    "train_positive_rate": 0.25,
+    "val_positive_rate": 0.1318,
+    "test_positive_rate": 0.1277
+  },
+  "label_distribution": {
+    "O": 150319,
+    "B-SUBSTITUTION": 1139,
+    "I-SUBSTITUTION": 3319,
+    "B-QUANTITY": 395,
+    "I-QUANTITY": 1319,
+    "B-TECHNIQUE": 944,
+    "I-TECHNIQUE": 4649,
+    "B-ADDITION": 499,
+    "I-ADDITION": 1460
+  },
+  "class_weights": {
+    "inverse_frequency": {
+      "O": 0.1213,
+      "B-SUBSTITUTION": 16.0026,
+      "I-SUBSTITUTION": 5.4917,
+      "B-QUANTITY": 20.0,
+      "I-QUANTITY": 13.8188,
+      "B-TECHNIQUE": 19.3083,
+      "I-TECHNIQUE": 3.9206,
+      "B-ADDITION": 20.0,
+      "I-ADDITION": 12.4842
+    },
+    "inverse_frequency_list": [
+      0.1213,
+      16.0026,
+      5.4917,
+      20.0,
+      13.8188,
+      19.3083,
+      3.9206,
+      20.0,
+      12.4842
+    ],
+    "uniform": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "description": "inverse_frequency: auto-computed as total/(num_classes*count_i), capped at 20.0. Use with --class-weights flag in train_student.py. uniform: all 1.0, for A1 ablation comparison."
+  }
+}

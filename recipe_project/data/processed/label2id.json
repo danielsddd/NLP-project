@@ -1,0 +1,11 @@
+{
+  "O": 0,
+  "B-SUBSTITUTION": 1,
+  "I-SUBSTITUTION": 2,
+  "B-QUANTITY": 3,
+  "I-QUANTITY": 4,
+  "B-TECHNIQUE": 5,
+  "I-TECHNIQUE": 6,
+  "B-ADDITION": 7,
+  "I-ADDITION": 8
+}
