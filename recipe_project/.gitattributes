@@ -1,0 +1,8 @@
+# Force LF line endings for files that run on the cluster.
+# Prevents "$'\r': command not found" errors when bash/python run on Linux.
+*.sh       text eol=lf
+*.sbatch   text eol=lf
+*.py       text eol=lf
+
+# Everything else: let Git auto-detect
+* text=auto
