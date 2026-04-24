@@ -1,17 +1,17 @@
 #!/bin/bash
 # =============================================================================
-# Model: xlm_roberta | Variant: A2_downsample_4
+# Model: xlmr | Variant: A7_io_scheme
 # =============================================================================
 
-#SBATCH --job-name=xlm__A2_downsam
+#SBATCH --job-name=xlm__A7_io_sche
 #SBATCH --partition=studentkillable
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="geforce_rtx_3090|a5000|a6000"
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
 #SBATCH --time=08:00:00
-#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlm_roberta/%j_A2_downsample_4.out
-#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlm_roberta/%j_A2_downsample_4.err
+#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlmr/%j_A7_io_scheme.out
+#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlmr/%j_A7_io_scheme.err
 
 # --- Environment ---
 USER_DIR="/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2"
@@ -25,10 +25,10 @@ export TOKENIZERS_PARALLELISM=false
 cd $PROJECT_DIR
 
 echo "=================================================="
-echo "MODEL:   xlm_roberta"
-echo "VARIANT: A2_downsample_4"
+echo "MODEL:   xlmr"
+echo "VARIANT: A7_io_scheme"
 echo "HF:      xlm-roberta-base"
-echo "OUTPUT:  models/checkpoints/xlm_roberta/A2_downsample_4"
+echo "OUTPUT:  models/checkpoints/xlmr/A7_io_scheme"
 echo "Job ID:  $SLURM_JOB_ID"
 echo "Node:    $(hostname)"
 echo "Start:   $(date)"
@@ -37,21 +37,21 @@ nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv 2>/dev/null ||
 echo "=================================================="
 
 # --- Data Check ---
-if [ ! -f "data/processed_ds4/train_merged.jsonl" ]; then
-    echo "ERROR: data/processed_ds4/train_merged.jsonl not found!"
+if [ ! -f "data/processed_io/train_merged.jsonl" ]; then
+    echo "ERROR: data/processed_io/train_merged.jsonl not found!"
     echo "Run the corresponding preprocessing script first."
     exit 1
 fi
-echo "Data:"; wc -l data/processed_ds4/train_merged.jsonl data/processed_ds4/val.jsonl
+echo "Data:"; wc -l data/processed_io/train_merged.jsonl data/processed_io/val.jsonl
 echo ""
 
-# --- A2: Downsample ratio 4:1 (with weights+focal) ---
-mkdir -p models/checkpoints/xlm_roberta/A2_downsample_4
+# --- A7: IO tagging (instead of BIO, with weights+focal) ---
+mkdir -p models/checkpoints/xlmr/A7_io_scheme
 
 python -m src.models.train_student \
     --model "xlm-roberta-base" \
-    --data-dir data/processed_ds4 \
-    --output-dir models/checkpoints/xlm_roberta/A2_downsample_4 \
+    --data-dir data/processed_io \
+    --output-dir models/checkpoints/xlmr/A7_io_scheme \
     --epochs 10 \
     --batch-size 16 \
     --lr 2e-5 \
@@ -64,9 +64,9 @@ python -m src.models.train_student \
 EXIT_CODE=$?
 if [ $EXIT_CODE -eq 0 ]; then
     echo ""; echo "=================================================="
-    echo "SUCCESS — saved to: models/checkpoints/xlm_roberta/A2_downsample_4"
+    echo "SUCCESS — saved to: models/checkpoints/xlmr/A7_io_scheme"
     echo "=================================================="
-    for f in models/checkpoints/xlm_roberta/A2_downsample_4/training_summary.json models/checkpoints/xlm_roberta/A2_downsample_4/all_results.json; do
+    for f in models/checkpoints/xlmr/A7_io_scheme/training_summary.json models/checkpoints/xlmr/A7_io_scheme/all_results.json; do
         [ -f "$f" ] && echo "--- $f ---" && cat "$f" && echo ""
     done
 else

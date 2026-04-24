@@ -1,17 +1,17 @@
 #!/bin/bash
 # =============================================================================
-# Model: xlm_roberta | Variant: P5_thread_aware_no_enriched
+# Model: xlmr | Variant: A5_data_75pct
 # =============================================================================
 
-#SBATCH --job-name=xlm__P5_thread_
+#SBATCH --job-name=xlm__A5_data_75
 #SBATCH --partition=studentkillable
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="geforce_rtx_3090|a5000|a6000"
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
 #SBATCH --time=08:00:00
-#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlm_roberta/%j_P5_thread_aware_no_enriched.out
-#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlm_roberta/%j_P5_thread_aware_no_enriched.err
+#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlmr/%j_A5_data_75pct.out
+#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlmr/%j_A5_data_75pct.err
 
 # --- Environment ---
 USER_DIR="/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2"
@@ -25,10 +25,10 @@ export TOKENIZERS_PARALLELISM=false
 cd $PROJECT_DIR
 
 echo "=================================================="
-echo "MODEL:   xlm_roberta"
-echo "VARIANT: P5_thread_aware_no_enriched"
+echo "MODEL:   xlmr"
+echo "VARIANT: A5_data_75pct"
 echo "HF:      xlm-roberta-base"
-echo "OUTPUT:  models/checkpoints/xlm_roberta/P5_thread_aware_no_enriched"
+echo "OUTPUT:  models/checkpoints/xlmr/A5_data_75pct"
 echo "Job ID:  $SLURM_JOB_ID"
 echo "Node:    $(hostname)"
 echo "Start:   $(date)"
@@ -37,21 +37,25 @@ nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv 2>/dev/null ||
 echo "=================================================="
 
 # --- Data Check ---
-if [ ! -f "data/processed_thread_aware_no_enriched/train_merged.jsonl" ]; then
-    echo "ERROR: data/processed_thread_aware_no_enriched/train_merged.jsonl not found!"
+if [ ! -f "data/processed/train_merged.jsonl" ]; then
+    echo "ERROR: data/processed/train_merged.jsonl not found!"
     echo "Run the corresponding preprocessing script first."
     exit 1
 fi
-echo "Data:"; wc -l data/processed_thread_aware_no_enriched/train_merged.jsonl data/processed_thread_aware_no_enriched/val.jsonl
+echo "Data:"; wc -l data/processed/train_merged.jsonl data/processed/val.jsonl
 echo ""
 
-# --- P5: + Weights + Focal + Thread-aware + NO enriched (isolation test) ---
-mkdir -p models/checkpoints/xlm_roberta/P5_thread_aware_no_enriched
+# --- A5: 75% of training data (with weights+focal) ---
+mkdir -p models/checkpoints/xlmr/A5_data_75pct
+
+TOTAL=$(wc -l < data/processed/train_merged.jsonl)
+MAX_EXAMPLES=$((TOTAL * 75 / 100))
+echo "Using $MAX_EXAMPLES / $TOTAL training examples (75%)"
 
 python -m src.models.train_student \
     --model "xlm-roberta-base" \
-    --data-dir data/processed_thread_aware_no_enriched \
-    --output-dir models/checkpoints/xlm_roberta/P5_thread_aware_no_enriched \
+    --data-dir data/processed \
+    --output-dir models/checkpoints/xlmr/A5_data_75pct \
     --epochs 10 \
     --batch-size 16 \
     --lr 2e-5 \
@@ -59,14 +63,15 @@ python -m src.models.train_student \
     --fp16 \
     --class-weights balanced \
     --focal-loss \
-    --focal-gamma 2.0
+    --focal-gamma 2.0 \
+    --max-examples $MAX_EXAMPLES
 
 EXIT_CODE=$?
 if [ $EXIT_CODE -eq 0 ]; then
     echo ""; echo "=================================================="
-    echo "SUCCESS — saved to: models/checkpoints/xlm_roberta/P5_thread_aware_no_enriched"
+    echo "SUCCESS — saved to: models/checkpoints/xlmr/A5_data_75pct"
     echo "=================================================="
-    for f in models/checkpoints/xlm_roberta/P5_thread_aware_no_enriched/training_summary.json models/checkpoints/xlm_roberta/P5_thread_aware_no_enriched/all_results.json; do
+    for f in models/checkpoints/xlmr/A5_data_75pct/training_summary.json models/checkpoints/xlmr/A5_data_75pct/all_results.json; do
         [ -f "$f" ] && echo "--- $f ---" && cat "$f" && echo ""
     done
 else

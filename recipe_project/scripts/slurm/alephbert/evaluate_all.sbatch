@@ -32,8 +32,32 @@ echo "=================================================="
 
 CKPT_BASE="models/checkpoints/alephbert"
 RESULT_BASE="results/alephbert"
-GOLD="data/gold_validation/gold_final.jsonl"
+# === Fix 5: per-model tokenized gold with auto-regeneration ===
+# Derive slug from this script's parent folder name.
+# dictabert_crf shares the dictabert tokenizer -> reuse its tokenized gold.
+MODEL_SLUG="$(basename "$(dirname "$0")")"
+if [ "$MODEL_SLUG" = "dictabert_crf" ]; then
+    GOLD_SLUG="dictabert"
+else
+    GOLD_SLUG="$MODEL_SLUG"
+fi
+GOLD="data/gold_validation/gold_tokenized_${GOLD_SLUG}.jsonl"
 
+# Auto-regenerate the tokenized gold if the file is missing or empty.
+if [ ! -s "$GOLD" ]; then
+    echo "Tokenized gold not found or empty: $GOLD"
+    echo "Regenerating via scripts/local/prepare_gold_for_eval.py ..."
+    python scripts/local/prepare_gold_for_eval.py --all \
+        || { echo "FATAL: gold tokenization failed"; exit 1; }
+fi
+
+if [ ! -s "$GOLD" ]; then
+    echo "FATAL: $GOLD still missing/empty after regeneration. Aborting." >&2
+    exit 1
+fi
+
+echo "Gold file: $GOLD ($(wc -l < "$GOLD") records)"
+# === end Fix 5 ===
 # Default silver test file (BIO scheme)
 DEFAULT_TEST="data/processed/test.jsonl"
 

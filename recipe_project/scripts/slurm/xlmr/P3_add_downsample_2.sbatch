@@ -1,17 +1,17 @@
 #!/bin/bash
 # =============================================================================
-# Model: xlm_roberta | Variant: A6_no_enriched
+# Model: xlmr | Variant: P3_add_downsample_2
 # =============================================================================
 
-#SBATCH --job-name=xlm__A6_no_enri
+#SBATCH --job-name=xlm__P3_add_dow
 #SBATCH --partition=studentkillable
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="geforce_rtx_3090|a5000|a6000"
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
 #SBATCH --time=08:00:00
-#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlm_roberta/%j_A6_no_enriched.out
-#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlm_roberta/%j_A6_no_enriched.err
+#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlmr/%j_P3_add_downsample_2.out
+#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlmr/%j_P3_add_downsample_2.err
 
 # --- Environment ---
 USER_DIR="/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2"
@@ -25,10 +25,10 @@ export TOKENIZERS_PARALLELISM=false
 cd $PROJECT_DIR
 
 echo "=================================================="
-echo "MODEL:   xlm_roberta"
-echo "VARIANT: A6_no_enriched"
+echo "MODEL:   xlmr"
+echo "VARIANT: P3_add_downsample_2"
 echo "HF:      xlm-roberta-base"
-echo "OUTPUT:  models/checkpoints/xlm_roberta/A6_no_enriched"
+echo "OUTPUT:  models/checkpoints/xlmr/P3_add_downsample_2"
 echo "Job ID:  $SLURM_JOB_ID"
 echo "Node:    $(hostname)"
 echo "Start:   $(date)"
@@ -37,21 +37,21 @@ nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv 2>/dev/null ||
 echo "=================================================="
 
 # --- Data Check ---
-if [ ! -f "data/processed_no_enriched/train_merged.jsonl" ]; then
-    echo "ERROR: data/processed_no_enriched/train_merged.jsonl not found!"
+if [ ! -f "data/processed_ds2/train_merged.jsonl" ]; then
+    echo "ERROR: data/processed_ds2/train_merged.jsonl not found!"
     echo "Run the corresponding preprocessing script first."
     exit 1
 fi
-echo "Data:"; wc -l data/processed_no_enriched/train_merged.jsonl data/processed_no_enriched/val.jsonl
+echo "Data:"; wc -l data/processed_ds2/train_merged.jsonl data/processed_ds2/val.jsonl
 echo ""
 
-# --- A6: Without enriched data (original only, with weights+focal) ---
-mkdir -p models/checkpoints/xlm_roberta/A6_no_enriched
+# --- P3a: + Weights + Focal + Downsample ratio 2:1 ---
+mkdir -p models/checkpoints/xlmr/P3_add_downsample_2
 
 python -m src.models.train_student \
     --model "xlm-roberta-base" \
-    --data-dir data/processed_no_enriched \
-    --output-dir models/checkpoints/xlm_roberta/A6_no_enriched \
+    --data-dir data/processed_ds2 \
+    --output-dir models/checkpoints/xlmr/P3_add_downsample_2 \
     --epochs 10 \
     --batch-size 16 \
     --lr 2e-5 \
@@ -64,9 +64,9 @@ python -m src.models.train_student \
 EXIT_CODE=$?
 if [ $EXIT_CODE -eq 0 ]; then
     echo ""; echo "=================================================="
-    echo "SUCCESS — saved to: models/checkpoints/xlm_roberta/A6_no_enriched"
+    echo "SUCCESS — saved to: models/checkpoints/xlmr/P3_add_downsample_2"
     echo "=================================================="
-    for f in models/checkpoints/xlm_roberta/A6_no_enriched/training_summary.json models/checkpoints/xlm_roberta/A6_no_enriched/all_results.json; do
+    for f in models/checkpoints/xlmr/P3_add_downsample_2/training_summary.json models/checkpoints/xlmr/P3_add_downsample_2/all_results.json; do
         [ -f "$f" ] && echo "--- $f ---" && cat "$f" && echo ""
     done
 else

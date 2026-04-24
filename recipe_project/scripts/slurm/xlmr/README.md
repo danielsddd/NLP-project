@@ -1,4 +1,4 @@
-# xlm_roberta — All Experiment Scripts
+# xlmr — All Experiment Scripts
 
 **Model:** `xlm-roberta-base`  
 **Script:** `src.models.train_student`  
@@ -39,4 +39,4 @@
 
 ## A3 (focal loss) and A4 (CRF) Notes
 - **A3**: Compare `P1_add_weights` vs `P2_add_focal` — same model, focal on/off
-- **A4**: Compare `xlm_roberta/P2_add_focal` vs `dictabert_crf/P2_crf_weighted` — CRF on/off
+- **A4**: Compare `xlmr/P2_add_focal` vs `dictabert_crf/P2_crf_weighted` — CRF on/off

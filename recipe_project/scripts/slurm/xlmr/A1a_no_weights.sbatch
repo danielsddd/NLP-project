@@ -1,17 +1,17 @@
 #!/bin/bash
 # =============================================================================
-# Model: xlm_roberta | Variant: A1c_weights_only
+# Model: xlmr | Variant: A1a_no_weights
 # =============================================================================
 
-#SBATCH --job-name=xlm__A1c_weight
+#SBATCH --job-name=xlm__A1a_no_wei
 #SBATCH --partition=studentkillable
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="geforce_rtx_3090|a5000|a6000"
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
 #SBATCH --time=08:00:00
-#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlm_roberta/%j_A1c_weights_only.out
-#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlm_roberta/%j_A1c_weights_only.err
+#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlmr/%j_A1a_no_weights.out
+#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlmr/%j_A1a_no_weights.err
 
 # --- Environment ---
 USER_DIR="/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2"
@@ -25,10 +25,10 @@ export TOKENIZERS_PARALLELISM=false
 cd $PROJECT_DIR
 
 echo "=================================================="
-echo "MODEL:   xlm_roberta"
-echo "VARIANT: A1c_weights_only"
+echo "MODEL:   xlmr"
+echo "VARIANT: A1a_no_weights"
 echo "HF:      xlm-roberta-base"
-echo "OUTPUT:  models/checkpoints/xlm_roberta/A1c_weights_only"
+echo "OUTPUT:  models/checkpoints/xlmr/A1a_no_weights"
 echo "Job ID:  $SLURM_JOB_ID"
 echo "Node:    $(hostname)"
 echo "Start:   $(date)"
@@ -45,26 +45,25 @@ fi
 echo "Data:"; wc -l data/processed/train_merged.jsonl data/processed/val.jsonl
 echo ""
 
-# --- A1c: Inverse-freq weights, NO focal ---
-mkdir -p models/checkpoints/xlm_roberta/A1c_weights_only
+# --- A1a: NO class weights, NO focal (plain CE) ---
+mkdir -p models/checkpoints/xlmr/A1a_no_weights
 
 python -m src.models.train_student \
     --model "xlm-roberta-base" \
     --data-dir data/processed \
-    --output-dir models/checkpoints/xlm_roberta/A1c_weights_only \
+    --output-dir models/checkpoints/xlmr/A1a_no_weights \
     --epochs 10 \
     --batch-size 16 \
     --lr 2e-5 \
     --seed 42 \
-    --fp16 \
-    --class-weights balanced
+    --fp16
 
 EXIT_CODE=$?
 if [ $EXIT_CODE -eq 0 ]; then
     echo ""; echo "=================================================="
-    echo "SUCCESS — saved to: models/checkpoints/xlm_roberta/A1c_weights_only"
+    echo "SUCCESS — saved to: models/checkpoints/xlmr/A1a_no_weights"
     echo "=================================================="
-    for f in models/checkpoints/xlm_roberta/A1c_weights_only/training_summary.json models/checkpoints/xlm_roberta/A1c_weights_only/all_results.json; do
+    for f in models/checkpoints/xlmr/A1a_no_weights/training_summary.json models/checkpoints/xlmr/A1a_no_weights/all_results.json; do
         [ -f "$f" ] && echo "--- $f ---" && cat "$f" && echo ""
     done
 else

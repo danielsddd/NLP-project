@@ -1,17 +1,17 @@
 #!/bin/bash
 # =============================================================================
-# Model: xlm_roberta | Variant: P3_add_downsample_4
+# Model: xlmr | Variant: A2_downsample_4
 # =============================================================================
 
-#SBATCH --job-name=xlm__P3_add_dow
+#SBATCH --job-name=xlm__A2_downsam
 #SBATCH --partition=studentkillable
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="geforce_rtx_3090|a5000|a6000"
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
 #SBATCH --time=08:00:00
-#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlm_roberta/%j_P3_add_downsample_4.out
-#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlm_roberta/%j_P3_add_downsample_4.err
+#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlmr/%j_A2_downsample_4.out
+#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlmr/%j_A2_downsample_4.err
 
 # --- Environment ---
 USER_DIR="/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2"
@@ -25,10 +25,10 @@ export TOKENIZERS_PARALLELISM=false
 cd $PROJECT_DIR
 
 echo "=================================================="
-echo "MODEL:   xlm_roberta"
-echo "VARIANT: P3_add_downsample_4"
+echo "MODEL:   xlmr"
+echo "VARIANT: A2_downsample_4"
 echo "HF:      xlm-roberta-base"
-echo "OUTPUT:  models/checkpoints/xlm_roberta/P3_add_downsample_4"
+echo "OUTPUT:  models/checkpoints/xlmr/A2_downsample_4"
 echo "Job ID:  $SLURM_JOB_ID"
 echo "Node:    $(hostname)"
 echo "Start:   $(date)"
@@ -45,13 +45,13 @@ fi
 echo "Data:"; wc -l data/processed_ds4/train_merged.jsonl data/processed_ds4/val.jsonl
 echo ""
 
-# --- P3b: + Weights + Focal + Downsample ratio 4:1 ---
-mkdir -p models/checkpoints/xlm_roberta/P3_add_downsample_4
+# --- A2: Downsample ratio 4:1 (with weights+focal) ---
+mkdir -p models/checkpoints/xlmr/A2_downsample_4
 
 python -m src.models.train_student \
     --model "xlm-roberta-base" \
     --data-dir data/processed_ds4 \
-    --output-dir models/checkpoints/xlm_roberta/P3_add_downsample_4 \
+    --output-dir models/checkpoints/xlmr/A2_downsample_4 \
     --epochs 10 \
     --batch-size 16 \
     --lr 2e-5 \
@@ -64,9 +64,9 @@ python -m src.models.train_student \
 EXIT_CODE=$?
 if [ $EXIT_CODE -eq 0 ]; then
     echo ""; echo "=================================================="
-    echo "SUCCESS — saved to: models/checkpoints/xlm_roberta/P3_add_downsample_4"
+    echo "SUCCESS — saved to: models/checkpoints/xlmr/A2_downsample_4"
     echo "=================================================="
-    for f in models/checkpoints/xlm_roberta/P3_add_downsample_4/training_summary.json models/checkpoints/xlm_roberta/P3_add_downsample_4/all_results.json; do
+    for f in models/checkpoints/xlmr/A2_downsample_4/training_summary.json models/checkpoints/xlmr/A2_downsample_4/all_results.json; do
         [ -f "$f" ] && echo "--- $f ---" && cat "$f" && echo ""
     done
 else

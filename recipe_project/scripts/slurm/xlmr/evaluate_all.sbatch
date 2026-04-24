@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Evaluate ALL variants of: xlm_roberta
+# Evaluate ALL variants of: xlmr
 # =============================================================================
 
 #SBATCH --job-name=xlm__eval
@@ -10,8 +10,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
 #SBATCH --time=08:00:00
-#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlm_roberta/%j_evaluate_all.out
-#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlm_roberta/%j_evaluate_all.err
+#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlmr/%j_evaluate_all.out
+#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlmr/%j_evaluate_all.err
 
 USER_DIR="/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2"
 PROJECT_DIR="$USER_DIR/recipe_modification_extraction/recipe_project"
@@ -24,16 +24,40 @@ export TOKENIZERS_PARALLELISM=false
 cd $PROJECT_DIR
 
 echo "=================================================="
-echo "EVALUATING ALL VARIANTS: xlm_roberta"
+echo "EVALUATING ALL VARIANTS: xlmr"
 echo "Job ID:  $SLURM_JOB_ID"
 echo "Node:    $(hostname)"
 echo "Start:   $(date)"
 echo "=================================================="
 
-CKPT_BASE="models/checkpoints/xlm_roberta"
-RESULT_BASE="results/xlm_roberta"
-GOLD="data/gold_validation/gold_final.jsonl"
+CKPT_BASE="models/checkpoints/xlmr"
+RESULT_BASE="results/xlmr"
+# === Fix 5: per-model tokenized gold with auto-regeneration ===
+# Derive slug from this script's parent folder name.
+# dictabert_crf shares the dictabert tokenizer -> reuse its tokenized gold.
+MODEL_SLUG="$(basename "$(dirname "$0")")"
+if [ "$MODEL_SLUG" = "dictabert_crf" ]; then
+    GOLD_SLUG="dictabert"
+else
+    GOLD_SLUG="$MODEL_SLUG"
+fi
+GOLD="data/gold_validation/gold_tokenized_${GOLD_SLUG}.jsonl"
 
+# Auto-regenerate the tokenized gold if the file is missing or empty.
+if [ ! -s "$GOLD" ]; then
+    echo "Tokenized gold not found or empty: $GOLD"
+    echo "Regenerating via scripts/local/prepare_gold_for_eval.py ..."
+    python scripts/local/prepare_gold_for_eval.py --all \
+        || { echo "FATAL: gold tokenization failed"; exit 1; }
+fi
+
+if [ ! -s "$GOLD" ]; then
+    echo "FATAL: $GOLD still missing/empty after regeneration. Aborting." >&2
+    exit 1
+fi
+
+echo "Gold file: $GOLD ($(wc -l < "$GOLD") records)"
+# === end Fix 5 ===
 # Default silver test file (BIO scheme)
 DEFAULT_TEST="data/processed/test.jsonl"
 
@@ -87,7 +111,7 @@ for vdir in $CKPT_BASE/*/; do
 
     echo ""
     echo "=================================================="
-    echo "Evaluating: xlm_roberta / $vname"
+    echo "Evaluating: xlmr / $vname"
     echo "Model:     $MP"
     echo "Test file: $TEST_FILE"
     echo "=================================================="
@@ -122,7 +146,7 @@ done
 
 echo ""
 echo "=================================================="
-echo "ALL EVALUATIONS COMPLETE: xlm_roberta"
+echo "ALL EVALUATIONS COMPLETE: xlmr"
 echo "Results in: $RESULT_BASE/"
 echo "End: $(date)"
 echo "=================================================="
