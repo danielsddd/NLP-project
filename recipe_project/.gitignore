@@ -1,43 +1,92 @@
-# Environments & Python
+# =============================================================================
+# Git Ignore - Recipe Modification Extraction (Full Version)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Environment & Secrets
+# -----------------------------------------------------------------------------
 .env
-.env.*
-venv/
-.venv/
-__pycache__/
-*.py[cod]
-*.egg-info/
-.pytest_cache/
-.ipynb_checkpoints/
+.env.local
+*.env
+.cache/
 
-# Data Structure
-data/**/*
-!data/**/.gitkeep
+# -----------------------------------------------------------------------------
+# Data (Surgical Rules for recipe_project structure)
+# -----------------------------------------------------------------------------
+# 1. Ignore EVERYTHING in the data folder by default
+recipe_project/data/**/*
 
-# Whitelist (Keep these in Git/visible to LLM)
-!data/gold_validation/Gold_lables.jsonl
-!data/processed/*.json
-!data/processed/val.jsonl
-!data/processed/test.jsonl
-!data/silver_labels/*.json
-!data/silver_labels/*.jsonl
+# 2. Re-allow .gitkeep files to maintain the folder structure
+!recipe_project/data/**/.gitkeep
 
-# Large Data (Ignore these to prevent Git/HF errors)
-data/processed/train*.jsonl
-data/silver_labels/teacher_output.jsonl
-data/raw_youtube/*
-!data/raw_youtube/.gitkeep
+# 3. WHITELIST: Small files the LLM needs to see (Gold, Metadata, Samples)
+!recipe_project/data/gold_validation/Gold_lables.jsonl
+!recipe_project/data/processed/*.json
+!recipe_project/data/processed/val.jsonl
+!recipe_project/data/processed/test.jsonl
+!recipe_project/data/silver_labels/*.json
+!recipe_project/data/silver_labels/*.jsonl
 
-# Models, Logs, and Results
+# 4. BLACKLIST: Heavy files that will break Git/HuggingFace (Over 100MB)
+recipe_project/data/processed/train_merged.jsonl
+recipe_project/data/processed/train.jsonl
+recipe_project/data/silver_labels/teacher_output.jsonl
+recipe_project/data/raw_youtube/*
+
+# -----------------------------------------------------------------------------
+# Models & Logs (Too large or transient)
+# -----------------------------------------------------------------------------
 models/
 logs/
-results/
 *.log
 tensorboard/
+results/
 *.pth
 *.bin
 
-# System & IDE
+# -----------------------------------------------------------------------------
+# Python & Jupyter
+# -----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# -----------------------------------------------------------------------------
+# IDE & OS
+# -----------------------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
 .DS_Store
 Thumbs.db
-.vscode/
-.idea/
+*.bak
+*.tmp
+*.temp
