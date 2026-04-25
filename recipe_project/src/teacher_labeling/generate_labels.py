@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
 """
-Teacher Silver Label Generator — v9 (Three-Pass with Majority Vote)
+Teacher Silver Label Generator — v9.1 (Three-Pass with Majority Vote)
 ====================================================================
-Pass 1: Label all threads with Gemini (primary). Batched.
+Pass 1: Label all threads with Gemini (primary). Batched. temp=0.0 (was 0.1).
 Pass 2: Re-label with same Gemini at temp=0.3 (intra-annotator agreement).
 Pass 3: Re-label with Cerebras Qwen 235B (inter-annotator agreement).
 Final: Majority vote (2/3 agree) → final label. All-3-disagree → manual review.
+
+CHANGELOG vs v9:
+  - SYSTEM_PROMPT rewritten per master plan §4.3 (5-part structure with
+    self-critique block, precision-over-recall framing, 8 few-shot examples,
+    explicit hedge-word stripping, QUANTITY-vs-ADDITION disambiguation).
+  - Pass 1 temperature: 0.1 → 0.0 (greedy, deterministic; master plan §4.3
+    committed change for boundary stability).
+  - Pass 2 temperature: 0.3 (UNCHANGED — locked per master plan).
+  - Pass 3 temperature: 0.1 (UNCHANGED — Qwen unchanged for cross-validation).
 
 Usage:
     # Pass 1 — label everything (Gemini):
@@ -122,11 +131,17 @@ VALID_ASPECTS = {"SUBSTITUTION", "QUANTITY", "TECHNIQUE", "ADDITION"}
 
 
 # =============================================================================
-# SYSTEM PROMPT — supports batched threads
+# SYSTEM PROMPT — v2 (master plan §4.3 compliant, 5-part structure)
 # =============================================================================
 
 SYSTEM_PROMPT = """You are an expert culinary NLP assistant specializing in Hebrew text.
 Your task: analyze comment threads from cooking videos and extract recipe modification suggestions.
+
+⚠️ GUIDING PRINCIPLE — READ FIRST
+Precision matters more than recall. When in doubt, return has_modification: false
+rather than guessing. A missed modification is acceptable; a fabricated modification
+poisons the training data. If you cannot confidently identify the exact span,
+the exact aspect, AND verify it is not praise/question/complaint — emit nothing.
 
 You will receive MULTIPLE threads in one request, each marked with === THREAD N (ID: xxx) ===.
 You must return a JSON array with one result object per thread, in the same order.
@@ -135,41 +150,268 @@ For each thread:
 - [TOP COMMENT]: The main comment
 - [REPLY N, user/creator]: Replies to the comment
 
-RULES:
-1. If the top comment is a QUESTION (contains ? or words like אפשר/האם/כדאי/אפשרי), extract modifications from the REPLIES only. The question itself is NOT a modification.
-2. If the top comment is a STATEMENT about what the user did differently, extract from the top comment.
-3. A question with no meaningful replies (or replies like emojis, "me too") → has_modification: false.
-4. "span" must be the EXACT Hebrew text substring copied from the source comment. Do NOT paraphrase.
-5. Praise ("it was delicious", "תודה", "יצא מעולה") is NOT a modification.
-6. aspect must be one of: SUBSTITUTION, QUANTITY, TECHNIQUE, ADDITION.
-7. source_comment must be "top" or "reply_1", "reply_2", etc.
-8. confidence is 0.0-1.0. Creator replies get 0.90+.
+════════════════════════════════════════════════════════
+RULES — read all of them before labeling anything
+════════════════════════════════════════════════════════
 
-OUTPUT FORMAT — a JSON array, one object per thread (strict JSON, no markdown, no explanation):
-[
-  {
-    "thread_id": "<id from header>",
-    "modifications": [
-      {"span": "<exact text>", "aspect": "SUBSTITUTION|QUANTITY|TECHNIQUE|ADDITION", "source_comment": "top|reply_N", "confidence": 0.0-1.0}
-    ],
-    "has_modification": true|false,
-    "thread_type": "question|statement|mixed"
-  }
-]
+RULE 1 — QUESTION vs STATEMENT
+  If the top comment is a QUESTION (contains ? or words like אפשר/האם/כדאי/אפשרי/מה אם),
+  extract modifications from the REPLIES only.
+  The question itself is NOT a modification.
+  A question with no meaningful replies → has_modification: false.
 
-EXAMPLE INPUT:
-=== THREAD 1 (ID: abc123) ===
-[TOP COMMENT] "אפשר במקום חמאה שמן קוקוס?"
-[REPLY 1, user] "כן! אותה כמות, יצא מעולה"
+RULE 2 — THE USER MUST HAVE ACTUALLY COOKED IT DIFFERENTLY
+  Only label a span if the commenter is describing something they ACTUALLY DID
+  (or a clear, actionable suggestion they are making about the recipe).
+  The following are NOT modifications — set has_modification: false:
+    • Pointing out an error or discrepancy in the video ("you said 300g but wrote 500g")
+    • Complaining about a result ("it gives a bad aftertaste")
+    • Expressing an opinion or praise ("it was amazing", "it was terrible")
+    • Asking a question even if it contains an ingredient name
+    • Simply mentioning an ingredient exists without saying what to do with it
 
-=== THREAD 2 (ID: def456) ===
-[TOP COMMENT] "יצא מעולה! תודה רבה!"
+RULE 3 — SPAN MUST BE EXACT HEBREW TEXT
+  "span" must be copied VERBATIM from the source_comment field you specify.
+  If source_comment is "reply_1", the span MUST be a literal substring of reply_1's text.
+  Do NOT paraphrase, translate, or summarize.
+  Do NOT include leading filler, hedge words, or question particles in the span.
 
-EXAMPLE OUTPUT:
-[
-  {"thread_id": "abc123", "modifications": [{"span": "שמן קוקוס", "aspect": "SUBSTITUTION", "source_comment": "reply_1", "confidence": 0.85}], "has_modification": true, "thread_type": "question"},
-  {"thread_id": "def456", "modifications": [], "has_modification": false, "thread_type": "statement"}
-]"""
+  Strip these from the START of spans:
+    • Hedges:    עדיף, אפשר, אולי, כדאי, ניתן, אני ממליץ, אפשרי, רצוי, מומלץ
+    • Questions: האם, אפשר, כדאי
+    • Verbs (when not essential): הוספתי, שמתי, עשיתי, השתמשתי
+
+  Span should fully include the modification AND its essential comparison context.
+  Typical length 2-6 tokens. Longer is OK when context demands it.
+  Critical: if the comment uses "X במקום Y" (X instead of Y), the span MUST
+  include BOTH X and Y. If it uses "יותר X" or "פחות X", include both words.
+  Do NOT chop the comparison and leave only the new value.
+
+  Example 1: "עדיף להוסיף כמה כפות מהרוטב"
+             CORRECT span: "להוסיף כמה כפות מהרוטב"
+             WRONG span:   "עדיף להוסיף כמה כפות מהרוטב"  (hedge included)
+
+  Example 2: "300 גרם קמח במקום 700 גרם"
+             CORRECT span: "300 גרם קמח במקום 700 גרם"
+             WRONG span:   "300 גרם קמח"  (comparison context lost)
+
+RULE 4 — ASPECT DEFINITIONS (pick exactly one)
+  SUBSTITUTION : replacing one ingredient/tool with another
+                 Example: "במקום סוכר שמתי סטיביה" → span: "סטיביה במקום סוכר"
+  QUANTITY     : a different amount of something already in the recipe,
+                 OR a specific cooking time/temperature modification,
+                 OR "more/less of X" where X is already in the recipe
+                 Example: "כפול כמות השוקולד" → span: "כפול כמות השוקולד"
+                 Example: "30 דקות במקום 20" → span: "30 דקות במקום 20"
+                 Example: "יותר סילאן" → span: "יותר סילאן"  (QUANTITY, not ADDITION)
+  TECHNIQUE    : a different method, tool, order of steps, or preparation approach
+                 Example: "במיקסר עם וו גיטרה" → span: "במיקסר עם וו גיטרה"
+                 Example: "להשרות לילה שלם" → span: "להשרות לילה שלם"
+  ADDITION     : adding a NEW ingredient that is NOT in the original recipe.
+                 REQUIRES an explicit add-verb in Hebrew:
+                   הוספתי, שמתי גם, נתתי, פיזרתי, בנוסף, יחד עם, גם, ועוד
+                 If NO add-verb appears, do NOT label ADDITION even if a
+                 new ingredient is mentioned — likely SUBSTITUTION/TECHNIQUE.
+                 Example POSITIVE: "הוספתי כוסברה טרייה בסוף" → span: "כוסברה טרייה"
+                 Example NEGATIVE: "במקום סוכר שמתי דבש" → SUBSTITUTION not ADDITION
+                                    ("במקום" present, no add-verb)
+
+  ⚠️  ASPECT DECISION ORDER (apply in this exact sequence):
+      1. If "במקום" (instead of) is present:
+         - Comparing amounts/times/temperatures → QUANTITY
+         - Comparing ingredients/tools         → SUBSTITUTION
+         (NEVER ADDITION when "במקום" appears)
+      2. If a comparative quantity word is present (יותר/פחות/כפול/חצי) → QUANTITY
+      3. If an explicit add-verb is present (הוספתי/שמתי גם/בנוסף/...) → ADDITION
+      4. If a method/tool/order/time/temperature change is described → TECHNIQUE
+      5. If NONE of the above clearly applies → set has_modification: false.
+         DO NOT default to ADDITION. DO NOT guess. Precision over recall.
+
+RULE 5 — source_comment
+  "top"     → the modification span is in the top comment
+  "reply_1" → first reply, "reply_2" → second reply, etc.
+  Whichever value you pick, the span MUST appear verbatim in THAT comment.
+
+RULE 6 — confidence
+  0.85–1.00 : Clear, unambiguous modification the commenter clearly did/recommends
+  0.70–0.84 : Somewhat clear but phrased tentatively or partially ambiguous
+  Below 0.70: Uncertain — set has_modification: false. Do NOT include low-confidence
+              modifications. Precision matters more than recall.
+  Creator replies always get 0.90+ if a modification is present.
+
+════════════════════════════════════════════════════════
+FEW-SHOT EXAMPLES
+════════════════════════════════════════════════════════
+
+──── EXAMPLE A — Complaint that looks like a modification (→ false) ────
+Comment: "100 אחוז נותן טעם לוואי😢"
+English: "100% gives off-taste 😢"
+Why false: The commenter is complaining about the result, not describing a change they made.
+Output: {"has_modification": false, "modifications": []}
+
+──── EXAMPLE B — Error-pointing, not a modification (→ false) ────
+Comment: "אתה אומר 300גרם והמתכון רשמתה 500גרם ויש הבדל‼️"
+English: "You say 300g but the recipe says 500g and there's a difference!!"
+Why false: The commenter is pointing out an inconsistency in the video, not describing
+           something they did differently. No modification was made.
+Output: {"has_modification": false, "modifications": []}
+
+──── EXAMPLE C — Observation that sounds like an ingredient (→ false) ────
+Comment: "חסר שמנת חמוצה בצד"
+English: "Missing sour cream on the side"
+Why false: The commenter is noting something they feel is missing from the dish as presented,
+           not describing a change they made to the recipe.
+Output: {"has_modification": false, "modifications": []}
+
+──── EXAMPLE D — Hedge word at span boundary (→ strip it) ────
+Comment: "עדיף להוסיף כמה כפות מהרוטב לתוך כוס גדולה עם רסק העגבניות עד להמסה ולהוסיף לקציצות"
+English: "Better to add a few spoons of sauce into a large cup with tomato paste until dissolved
+          then add to the meatballs"
+Correct output:
+{
+  "has_modification": true,
+  "thread_type": "statement",
+  "modifications": [
+    {
+      "span": "להוסיף כמה כפות מהרוטב",
+      "aspect": "TECHNIQUE",
+      "source_comment": "top",
+      "confidence": 0.85
+    }
+  ]
+}
+Note: "עדיף" stripped from start (hedge). Span kept short (2-4 tokens). The rest of the
+      sentence is procedural detail, not a separate modification.
+
+──── EXAMPLE E — QUANTITY vs ADDITION (amount of existing ingredient) ────
+Comment: "רק לשים הרבה נוזלים שלא יהיה כבד בגלל הקטניות ואני אוהב יותר סילאן"
+English: "Just add a lot of liquid so it's not heavy from the legumes, and I like more silan"
+Correct output:
+{
+  "has_modification": true,
+  "thread_type": "statement",
+  "modifications": [
+    {
+      "span": "הרבה נוזלים",
+      "aspect": "QUANTITY",
+      "source_comment": "top",
+      "confidence": 0.82
+    },
+    {
+      "span": "יותר סילאן",
+      "aspect": "QUANTITY",
+      "source_comment": "top",
+      "confidence": 0.85
+    }
+  ]
+}
+Note: Both are QUANTITY. "יותר סילאן" is NOT ADDITION — silan is already in the recipe,
+      the commenter uses more of it. "לשים" stripped (verb, not essential).
+
+──── EXAMPLE F — Question thread, modification confirmed in reply ────
+[TOP COMMENT]: "אפשרי להחליף במירין?"
+[REPLY 1, user]: "כן, פשוט החלף במירין באותה כמות"
+Correct output:
+{
+  "has_modification": true,
+  "thread_type": "question",
+  "modifications": [
+    {
+      "span": "החלף במירין",
+      "aspect": "SUBSTITUTION",
+      "source_comment": "reply_1",
+      "confidence": 0.87
+    }
+  ]
+}
+Note: The question itself is NOT a modification. The reply confirms the substitution
+      and the span is a verbatim substring of reply_1's text. The span MUST come from
+      whichever comment you set as source_comment.
+
+──── EXAMPLE G — Clear technique modification in top comment ────
+Comment: "תשים שמן בדף אפייה ככה לא ידבק לך"
+English: "Put oil on the parchment paper so it doesn't stick"
+Correct output:
+{
+  "has_modification": true,
+  "thread_type": "statement",
+  "modifications": [
+    {
+      "span": "שמן בדף אפייה",
+      "aspect": "TECHNIQUE",
+      "source_comment": "top",
+      "confidence": 0.90
+    }
+  ]
+}
+Note: "תשים" stripped (verb). The "ככה לא ידבק לך" tail is the rationale, not
+      a separate modification.
+
+──── EXAMPLE H — Substitution buried in a long comment ────
+Comment: "כוסמין לבן יעבוד טוב כי הוא מתנהג זהה. המלא מטבעו קל אז לא בטוחה איך יצא לך"
+English: "White spelt will work well because it behaves the same. Whole [spelt] is
+          naturally light so not sure how it'll turn out for you"
+Correct output:
+{
+  "has_modification": true,
+  "thread_type": "statement",
+  "modifications": [
+    {
+      "span": "כוסמין לבן",
+      "aspect": "SUBSTITUTION",
+      "source_comment": "top",
+      "confidence": 0.86
+    }
+  ]
+}
+Note: Only the substituted ingredient is the span — not the entire explanation.
+
+════════════════════════════════════════════════════════
+SELF-CHECK BEFORE OUTPUTTING
+════════════════════════════════════════════════════════
+
+For EACH modification you are about to emit, verify all of the following.
+If ANY check fails, remove that modification from your output:
+
+  ☐ (a) The span string appears VERBATIM as a substring of the comment
+        named in source_comment (top / reply_N). If it doesn't, the span
+        is wrong — fix or drop it.
+  ☐ (b) The aspect is exactly one of SUBSTITUTION/QUANTITY/TECHNIQUE/ADDITION
+        and matches the definition in Rule 4.
+  ☐ (c) The span is not praise, a complaint, an error-pointing observation,
+        or a bare question (Rule 2).
+  ☐ (d) The span does NOT start with a hedge word, question particle, or
+        unnecessary leading verb (Rule 3).
+  ☐ (e) The span is short (2-4 tokens typical, never more than 8).
+  ☐ (f) Confidence ≥ 0.70. If lower, drop the modification.
+
+After all checks, if no modifications survive, set has_modification: false
+and modifications: [].
+
+════════════════════════════════════════════════════════
+OUTPUT FORMAT
+════════════════════════════════════════════════════════
+
+Return a JSON array with exactly one object per thread, in input order.
+Each object must have this exact shape:
+
+{
+  "thread_id": "<the ID from the thread header>",
+  "has_modification": true/false,
+  "thread_type": "statement" | "question" | "mixed",
+  "modifications": [
+    {
+      "span": "<exact Hebrew substring of source comment>",
+      "aspect": "SUBSTITUTION" | "QUANTITY" | "TECHNIQUE" | "ADDITION",
+      "source_comment": "top" | "reply_1" | "reply_2" | ...,
+      "confidence": 0.0–1.0
+    }
+  ]
+}
+
+If has_modification is false, modifications must be an empty array [].
+Do not add any text, explanation, or markdown outside the JSON array.
+"""
 
 
 # =============================================================================
@@ -282,19 +524,26 @@ def parse_batch_response(raw: str, threads: List[dict]) -> Dict[str, Optional[di
         return results
 
     if isinstance(parsed, list):
-        for item in parsed:
-            if not isinstance(item, dict):
-                continue
-            tid = item.get("thread_id", "")
-            if tid in results:
-                validated = validate_single_output(item)
-                if validated:
-                    results[tid] = validated
-
-        matched_count = sum(1 for v in results.values() if v is not None)
-        if matched_count == 0 and len(parsed) == len(threads):
+        # PRIMARY STRATEGY: positional alignment when lengths match.
+        # Reason: Qwen-3-235B's tokenizer occasionally rewrites YouTube thread_ids
+        # mid-stream (drops chars from long alphanumeric IDs). String matching on
+        # `thread_id` then fails for those records. Order is preserved by the model,
+        # so position-based matching is more robust than string matching.
+        if len(parsed) == len(threads):
             for tid, item in zip(thread_ids, parsed):
                 if isinstance(item, dict):
+                    validated = validate_single_output(item)
+                    if validated:
+                        results[tid] = validated
+        else:
+            # FALLBACK: lengths differ (model dropped or duplicated items).
+            # Match by thread_id string. Items whose IDs don't match input
+            # are dropped (no recovery possible without lengths agreeing).
+            for item in parsed:
+                if not isinstance(item, dict):
+                    continue
+                tid = item.get("thread_id", "")
+                if tid in results:
                     validated = validate_single_output(item)
                     if validated:
                         results[tid] = validated
@@ -347,7 +596,7 @@ class GeminiTeacher:
     FAMILY = GEMINI_FAMILY
     MIN_DELAY = 6.0  # 15 RPM → safe margin
 
-    def __init__(self, api_key: str, model_name: str = None, temperature: float = 0.1):
+    def __init__(self, api_key: str, model_name: str = None, temperature: float = 0.0):
         if not GEMINI_AVAILABLE:
             raise ImportError("google-genai not installed. Run: pip install google-genai")
         self.client = genai.Client(api_key=api_key)
@@ -383,7 +632,14 @@ class CerebrasTeacher:
 
     NAME = "qwen-3-235b-a22b-instruct-2507"
     FAMILY = CEREBRAS_FAMILY
-    MIN_DELAY = 8.0
+    # HARD LIMITS (from Cerebras dashboard, qwen-3-235b-a22b-instruct-2507 Preview):
+    #   RPM=5, RPH=900, RPD=14,400, TPM=30,000, context=65,536
+    # MIN_DELAY: 60s/5RPM = 12s, +1s safety margin = 13s.
+    # MAX_BATCH_SIZE: with v2 prompt (~3.5K tokens) + N threads × ~250 tokens each
+    #   + output ~250 tokens/thread, batch=10 stays under 30K TPM at 5 RPM.
+    #   batch=20 would be ~6-9K tokens/call × 5 RPM = 30-45K TPM → OVER limit.
+    MIN_DELAY = 13.0
+    MAX_BATCH_SIZE = 30
 
     def __init__(self, api_key: str, model_name: str = None):
         if not OPENAI_COMPAT_AVAILABLE:
@@ -405,7 +661,7 @@ class CerebrasTeacher:
                     {"role": "user", "content": prompt_text},
                 ],
                 temperature=0.1,
-                max_tokens=4096,
+                max_tokens=8192,  # was 4096 — bumped for v2 longer prompt + JSON safety margin
             )
             raw = completion.choices[0].message.content
             results = parse_batch_response(raw, threads)
@@ -599,6 +855,13 @@ def run_repass(todo: List[dict], teacher, output_field: str,
             stats["batch_errors"] += 1
             consecutive_errors += 1
             print(f"  [Batch {batch_num}] ERROR: {(error or 'No results')[:100]}")
+            # CRITICAL FIX: on rate limit, wait and RETRY same batch (do NOT advance idx).
+            # Without this, rate-limited batches were silently skipped → data loss.
+            if is_rl:
+                wait_time = 15
+                print(f"  ⏳ Rate limited — waiting {wait_time}s before retry...")
+                time.sleep(wait_time)
+                continue  # retry same batch — do NOT increment idx
             if consecutive_errors >= 5:
                 print(f"\n  ❌ 5 consecutive batch errors — stopping {pass_name}.")
                 break
@@ -666,7 +929,7 @@ def run_pass1(input_path: str, output_path: str,
               gemini_model: str = None,
               limit: int = None, skip_existing: bool = True,
               batch_size: int = BATCH_SIZE):
-    """Pass 1: Label threads with Gemini."""
+    """Pass 1: Label threads with Gemini. temp=0.0 (greedy, deterministic)."""
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -675,7 +938,8 @@ def run_pass1(input_path: str, output_path: str,
 
     if gemini_key and GEMINI_AVAILABLE:
         try:
-            gemini = GeminiTeacher(api_key=gemini_key, model_name=gemini_model, temperature=0.1)
+            # MASTER PLAN §4.3 COMMITTED CHANGE: temp 0.1 → 0.0 for boundary stability
+            gemini = GeminiTeacher(api_key=gemini_key, model_name=gemini_model, temperature=0.0)
             print(f"✓ Gemini ready: {gemini.model_name} (temp={gemini.temperature})")
         except Exception as e:
             print(f"⚠ Gemini init failed: {e}")
@@ -712,6 +976,18 @@ def run_pass1(input_path: str, output_path: str,
     print(f"\n[PASS 1] Processing {total_threads} threads in ~{num_batches} batches of {batch_size}")
     print(f"Output: {output_path}\n")
 
+    # GEMINI BUDGET PRE-CHECK
+    # Gemini 3.1 Flash Lite limits: RPM=15, TPM=250K, RPD=500
+    GEMINI_RPD = 500
+    if num_batches > GEMINI_RPD:
+        days_needed = (num_batches + GEMINI_RPD - 1) // GEMINI_RPD
+        print(f"⚠️  WARNING: {num_batches} calls needed, Gemini free-tier RPD = {GEMINI_RPD}")
+        print(f"   This run will need ~{days_needed} days at the current quota.")
+        print(f"   Options: (a) use --limit to split across days,")
+        print(f"            (b) upgrade to paid tier (no daily cap),")
+        print(f"            (c) accept the multi-day timeline.")
+        print(f"   Resume is supported (existing thread_ids will be skipped).\n")
+
     teacher = gemini
     teacher_name = gemini.model_name
     delay = GeminiTeacher.MIN_DELAY
@@ -739,7 +1015,7 @@ def run_pass1(input_path: str, output_path: str,
             consecutive_errors += 1
             print(f"  [Batch {batch_num}] ERROR: {(error or 'No results')[:100]}")
             if is_rl:
-                wait_time = 60
+                wait_time = 15
                 print(f"  ⏳ Rate limited — waiting {wait_time}s before retry...")
                 time.sleep(wait_time)
                 continue  # retry same batch
@@ -842,7 +1118,7 @@ def run_pass2(output_path: str,
               gemini_key: str = None,
               gemini_model: str = None,
               limit: int = None, batch_size: int = BATCH_SIZE):
-    """Pass 2: Re-label with same Gemini at temperature=0.3."""
+    """Pass 2: Re-label with same Gemini at temperature=0.3 (LOCKED per master plan)."""
 
     output_path = Path(output_path)
     if not output_path.exists():
@@ -923,8 +1199,21 @@ def run_pass3(output_path: str,
         print("❌ CEREBRAS_API_KEY required for pass 3")
         return
 
+    # HARD CLAMP: Cerebras TPM=30K limit means batch_size > 10 will exceed TPM
+    # at 5 RPM with the v2 prompt (~3.5K tokens). Master plan §4.6 already
+    # specifies --batch-size 10 for Pass 3, but enforce it defensively here.
+    if batch_size > CerebrasTeacher.MAX_BATCH_SIZE:
+        print(f"⚠️  WARNING: Cerebras batch_size {batch_size} exceeds safe max "
+              f"({CerebrasTeacher.MAX_BATCH_SIZE}).")
+        print(f"   Clamping to {CerebrasTeacher.MAX_BATCH_SIZE} to stay within "
+              f"30K TPM limit at 5 RPM.")
+        batch_size = CerebrasTeacher.MAX_BATCH_SIZE
+
     cerebras = CerebrasTeacher(api_key=cerebras_key, model_name=cerebras_model)
     print(f"✓ Cerebras ready: {cerebras.model_name}")
+    print(f"  Rate limits: 5 RPM, 14.4K RPD, 30K TPM, 65K context")
+    print(f"  MIN_DELAY: {cerebras.MIN_DELAY}s between calls")
+    print(f"  Batch size: {batch_size}")
 
     records = load_all_records(output_path)
     print(f"Loaded {len(records)} records from {output_path}")

@@ -6,7 +6,7 @@
 #SBATCH --job-name=dict_P2_add_foc
 #SBATCH --partition=studentkillable
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="a5000|a6000"
+#SBATCH --constraint="titan_xp|geforce_rtx_2080"
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=10:00:00
@@ -54,7 +54,7 @@ python -m src.models.train_student \
     --output-dir models/checkpoints/dictabert_large/P2_add_focal \
     --epochs 10 \
     --batch-size 8 \
-    --lr 2e-5 \
+    --lr 1e-5 \
     --seed 42 \
     --fp16 \
     --class-weights balanced \

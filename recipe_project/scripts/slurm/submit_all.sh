@@ -13,7 +13,7 @@ case "$1" in
 
     main)
         echo "=== Submitting MAIN config (P2) for all models ==="
-        for m in mbert hebert xlm_roberta alephbert dictabert dictabert_large; do
+        for m in mbert hebert xlmr alephbert dictabert dictabert_large; do
             echo "  $m/P2_add_focal"; sbatch "$DIR/$m/P2_add_focal.sbatch"
         done
         echo "  dictabert_crf/P2_crf_weighted"; sbatch "$DIR/dictabert_crf/P2_crf_weighted.sbatch"
@@ -30,7 +30,7 @@ case "$1" in
 
     progressive_all)
         echo "=== Submitting P0-P5 for ALL models ==="
-        for m in mbert hebert xlm_roberta alephbert dictabert dictabert_large dictabert_crf; do
+        for m in mbert hebert xlmr alephbert dictabert dictabert_large dictabert_crf; do
             for s in "$DIR/$m"/P*.sbatch; do
                 echo "  $m/$(basename $s)"; sbatch "$s"
             done
@@ -47,7 +47,7 @@ case "$1" in
 
     ablations_all)
         echo "=== ALL ablations × ALL models ==="
-        for m in mbert hebert xlm_roberta alephbert dictabert dictabert_large dictabert_crf; do
+        for m in mbert hebert xlmr alephbert dictabert dictabert_large dictabert_crf; do
             for s in "$DIR/$m"/A*.sbatch; do
                 echo "  $m/$(basename $s)"; sbatch "$s"
             done
@@ -64,7 +64,7 @@ case "$1" in
 
     evaluate)
         echo "=== Evaluating all models ==="
-        for m in mbert hebert xlm_roberta alephbert dictabert dictabert_large dictabert_crf; do
+        for m in mbert hebert xlmr alephbert dictabert dictabert_large dictabert_crf; do
             echo "  $m"; sbatch "$DIR/$m/evaluate_all.sbatch"
         done ;;
 
@@ -102,7 +102,7 @@ case "$1" in
 
     count)
         TOTAL=0
-        for m in preprocessing mbert hebert xlm_roberta alephbert dictabert dictabert_large dictabert_crf; do
+        for m in preprocessing mbert hebert xlmr alephbert dictabert dictabert_large dictabert_crf; do
             C=$(find "$DIR/$m" -name "*.sbatch" 2>/dev/null | wc -l)
             echo "  $m: $C"; TOTAL=$((TOTAL + C))
         done
