@@ -1,20 +1,31 @@
 #!/usr/bin/env python3
 """
-Teacher Silver Label Generator — v9.1 (Three-Pass with Majority Vote)
-====================================================================
-Pass 1: Label all threads with Gemini (primary). Batched. temp=0.0 (was 0.1).
+Teacher Silver Label Generator — v10 (Tiebreaker Pass 3 + Span Validation)
+==========================================================================
+Pass 1: Label all threads with Gemini (primary). Batched. temp=0.0.
 Pass 2: Re-label with same Gemini at temp=0.3 (intra-annotator agreement).
-Pass 3: Re-label with Cerebras Qwen 235B (inter-annotator agreement).
-Final: Majority vote (2/3 agree) → final label. All-3-disagree → manual review.
+Pass 3: TIEBREAKER ONLY — Cerebras Qwen 235B labels records where
+        Pass 1 and Pass 2 disagree (full agreement → skipped, marked
+        as "gemini_unanimous"). Cuts Qwen quota usage by ~30-70%.
+Final: Majority vote (2/3) OR gemini_unanimous (Pass 3 skipped).
+       Final spans are validated against the actual thread text;
+       hallucinated spans are dropped before training data is built.
 
-CHANGELOG vs v9:
-  - SYSTEM_PROMPT rewritten per master plan §4.3 (5-part structure with
-    self-critique block, precision-over-recall framing, 8 few-shot examples,
-    explicit hedge-word stripping, QUANTITY-vs-ADDITION disambiguation).
-  - Pass 1 temperature: 0.1 → 0.0 (greedy, deterministic; master plan §4.3
-    committed change for boundary stability).
-  - Pass 2 temperature: 0.3 (UNCHANGED — locked per master plan).
-  - Pass 3 temperature: 0.1 (UNCHANGED — Qwen unchanged for cross-validation).
+CHANGELOG vs v9.1:
+  - Pass 3 runs in TIEBREAKER MODE by default (selective routing).
+    Records where Pass 1 ≡ Pass 2 (full agreement on aspects) are
+    flagged pass3_skipped=True and never sent to Qwen, saving quota.
+    Use --full-coverage to opt back into labeling every record.
+  - New vote_method "gemini_unanimous" for skipped-Pass-3 records.
+  - Span validation hook in run_finalize (drops hallucinations,
+    flips threads to no_mod when every span fails substring check).
+  - thread_type voting in compute_majority_vote (no more hardcoded
+    "statement" in the no-mod branch).
+  - SYSTEM_PROMPT patches for the three Qwen-specific bug classes:
+    * RULE 2 bullet for "describing what the creator did"
+    * RULE 4 TECHNIQUE definition includes omissions ("בלי X")
+    * Aspect decision order has a dedicated omission step
+    * Three new few-shot examples (I, J, K) covering Bugs 3, 4, 5
 
 Usage:
     # Pass 1 — label everything (Gemini):
@@ -24,10 +35,13 @@ Usage:
     # Pass 2 — same Gemini, different temperature (intra-annotator):
     python -m src.teacher_labeling.generate_labels --second-pass --limit 5000 --batch-size 20
 
-    # Pass 3 — Cerebras Qwen 235B (inter-annotator):
-    python -m src.teacher_labeling.generate_labels --third-pass --limit 5000 --batch-size 20
+    # Pass 3 — TIEBREAKER MODE (default): only records where pass1 ≢ pass2:
+    python -m src.teacher_labeling.generate_labels --third-pass --batch-size 10
 
-    # Compute majority vote + export disagreements:
+    # Pass 3 — full coverage (legacy behavior, ALL records to Qwen):
+    python -m src.teacher_labeling.generate_labels --third-pass --full-coverage --batch-size 10
+
+    # Compute majority vote + validate spans + flag disagreements:
     python -m src.teacher_labeling.generate_labels --finalize
 
     # Export only needs-review records:
@@ -52,6 +66,7 @@ from typing import List, Optional, Dict, Any
 from dotenv import load_dotenv
 import os
 import shutil
+from collections import Counter as _Counter
 
 load_dotenv()
 
@@ -132,6 +147,8 @@ VALID_ASPECTS = {"SUBSTITUTION", "QUANTITY", "TECHNIQUE", "ADDITION"}
 
 # =============================================================================
 # SYSTEM PROMPT — v2 (master plan §4.3 compliant, 5-part structure)
+#                   + Qwen-bug patches (RULE 2 bullet, RULE 4 omission,
+#                     decision-order omission step, examples I/J/K)
 # =============================================================================
 
 SYSTEM_PROMPT = """You are an expert culinary NLP assistant specializing in Hebrew text.
@@ -169,6 +186,10 @@ RULE 2 — THE USER MUST HAVE ACTUALLY COOKED IT DIFFERENTLY
     • Expressing an opinion or praise ("it was amazing", "it was terrible")
     • Asking a question even if it contains an ingredient name
     • Simply mentioning an ingredient exists without saying what to do with it
+    • Describing what the CREATOR/host did in the video itself ("she added X",
+      "הוא שם Y", "היא הוסיפה Z") — this is the viewer NOTING the recipe,
+      not modifying it. Only count it if the viewer states THEY changed something
+      themselves, or proposes adding/changing something.
 
 RULE 3 — SPAN MUST BE EXACT HEBREW TEXT
   "span" must be copied VERBATIM from the source_comment field you specify.
@@ -204,9 +225,15 @@ RULE 4 — ASPECT DEFINITIONS (pick exactly one)
                  Example: "כפול כמות השוקולד" → span: "כפול כמות השוקולד"
                  Example: "30 דקות במקום 20" → span: "30 דקות במקום 20"
                  Example: "יותר סילאן" → span: "יותר סילאן"  (QUANTITY, not ADDITION)
-  TECHNIQUE    : a different method, tool, order of steps, or preparation approach
+  TECHNIQUE    : a different method, tool, order of steps, preparation approach,
+                 OR an OMISSION — the user removed an ingredient that was in
+                 the original recipe (phrases like "בלי X", "ללא X", "לא שמתי X"
+                 / "without X"). Omissions are TECHNIQUE, never SUBSTITUTION,
+                 because there is no replacement ingredient.
                  Example: "במיקסר עם וו גיטרה" → span: "במיקסר עם וו גיטרה"
                  Example: "להשרות לילה שלם" → span: "להשרות לילה שלם"
+                 Example: "בלי אבקת אפיה" → span: "בלי אבקת אפיה"  (omission)
+                 Example: "ללא סוכר" → span: "ללא סוכר"  (omission)
   ADDITION     : adding a NEW ingredient that is NOT in the original recipe.
                  REQUIRES an explicit add-verb in Hebrew:
                    הוספתי, שמתי גם, נתתי, פיזרתי, בנוסף, יחד עם, גם, ועוד
@@ -223,8 +250,11 @@ RULE 4 — ASPECT DEFINITIONS (pick exactly one)
          (NEVER ADDITION when "במקום" appears)
       2. If a comparative quantity word is present (יותר/פחות/כפול/חצי) → QUANTITY
       3. If an explicit add-verb is present (הוספתי/שמתי גם/בנוסף/...) → ADDITION
-      4. If a method/tool/order/time/temperature change is described → TECHNIQUE
-      5. If NONE of the above clearly applies → set has_modification: false.
+      4. If the comment OMITS an existing ingredient ("בלי X" / "ללא X" /
+         "לא שמתי X" / "without X") → TECHNIQUE.
+         Never SUBSTITUTION — omission has no replacement ingredient.
+      5. If a method/tool/order/time/temperature change is described → TECHNIQUE
+      6. If NONE of the above clearly applies → set has_modification: false.
          DO NOT default to ADDITION. DO NOT guess. Precision over recall.
 
 RULE 5 — source_comment
@@ -365,6 +395,50 @@ Correct output:
   ]
 }
 Note: Only the substituted ingredient is the span — not the entire explanation.
+
+──── EXAMPLE I — Substitution question with no confirming reply (→ false) ────
+[TOP COMMENT]: "אפשר קוטג' במקום גבינה לבנה?"
+English: "Can I use cottage cheese instead of white cheese?"
+[no replies, or replies are emojis / "me too" / thanks only]
+Why false: The viewer is ASKING about a substitution, not REPORTING one.
+           Without a reply that confirms the substitution works, there is no
+           modification to extract. The ingredients named in the question
+           (קוטג', גבינה לבנה) are NOT a SUBSTITUTION span.
+Output: {"has_modification": false, "thread_type": "question", "modifications": []}
+
+──── EXAMPLE J — Reply describing what the creator did (→ false) ────
+[TOP COMMENT]: "צריך להוסיף חומוס מבושל למרק, למקרה ששכחת"
+[REPLY 1, user]: "היא הוסיפה לסיר גרגירי חומוס 🎉"
+English: TOP: "You need to add cooked chickpeas to the soup, in case you forgot"
+         REPLY 1: "She added chickpeas to the pot 🎉"
+Why false: Reply 1 is the viewer NOTING that the creator already added chickpeas
+           in the video — descriptive, not a viewer-suggested modification.
+           The top comment is a misunderstanding (the viewer thought the creator
+           forgot, but the creator didn't), so it isn't a real modification
+           suggestion either.
+Output: {"has_modification": false, "thread_type": "statement", "modifications": []}
+
+──── EXAMPLE K — Omission is TECHNIQUE, not SUBSTITUTION ────
+Comment: "עשיתי בלי אבקת אפיה ויצא מצוין"
+English: "I made it without baking powder and it came out great"
+Why TECHNIQUE: The user OMITTED an ingredient that was in the original recipe.
+               There is NO replacement ingredient → not SUBSTITUTION.
+Correct output:
+{
+  "has_modification": true,
+  "thread_type": "statement",
+  "modifications": [
+    {
+      "span": "בלי אבקת אפיה",
+      "aspect": "TECHNIQUE",
+      "source_comment": "top",
+      "confidence": 0.90
+    }
+  ]
+}
+Note: "עשיתי" stripped (verb, not essential). Span keeps the negation "בלי"
+      because that IS the modification — without "בלי" the span "אבקת אפיה"
+      would name an ingredient with no indication of what was changed.
 
 ════════════════════════════════════════════════════════
 SELF-CHECK BEFORE OUTPUTTING
@@ -560,17 +634,58 @@ def parse_batch_response(raw: str, threads: List[dict]) -> Dict[str, Optional[di
 # RATE LIMIT DETECTION
 # =============================================================================
 
-def is_rate_limit_error(error: Exception) -> bool:
-    """Check if an exception is a rate limit / quota error."""
+def classify_api_error(error: Exception) -> str:
+    """Classify an API exception into one of:
+        'rate_limit'  — 429 / quota exceeded / TPM-RPM-RPD exhausted (your account)
+        'overloaded'  — 503 service unavailable / model busy (their server)
+        'auth'        — 401 / 403 / invalid API key (NEVER retry — fail fast)
+        'transient'   — 500 / connection / timeout (retry with short backoff)
+        'other'       — anything else (count toward kill switch)
+    """
     msg = str(error).lower()
-    keywords = [
+
+    # Auth errors — never retry, no point waiting
+    if any(kw in msg for kw in ["401", "403", "unauthorized", "invalid api key",
+                                 "permission denied", "api key not valid"]):
+        return "auth"
+
+    # Server overload — their problem, back off hard
+    if any(kw in msg for kw in [
+        "503", "unavailable", "experiencing high demand",
+        "model is overloaded", "model_overloaded", "overloaded",
+        "service unavailable", "try again later",
+    ]):
+        return "overloaded"
+
+    # Rate limit — your quota
+    if any(kw in msg for kw in [
         "rate limit", "rate_limit", "ratelimit",
         "quota", "resource exhausted", "resourceexhausted",
-        "429", "too many requests", "try again later",
+        "429", "too many requests",
         "tokens per minute", "requests per minute",
         "requests per day", "rpm", "rpd", "tpm",
-    ]
-    return any(kw in msg for kw in keywords)
+    ]):
+        return "rate_limit"
+
+    # Transient network/server faults — retry with short backoff
+    if any(kw in msg for kw in [
+        "500", "502", "504",
+        "connection", "timeout", "timed out",
+        "deadline exceeded", "remote end closed",
+        "ssl", "broken pipe",
+    ]):
+        return "transient"
+
+    return "other"
+
+
+def is_rate_limit_error(error: Exception) -> bool:
+    """Backward-compat wrapper. Returns True for rate_limit OR overloaded
+    (both should trigger backoff). Auth/other errors return False so the
+    kill switch can fire on them.
+    """
+    kind = classify_api_error(error)
+    return kind in ("rate_limit", "overloaded")
 
 
 def detect_model_family(model_name: str) -> str:
@@ -699,11 +814,74 @@ def compute_pairwise_agreement(output1: dict, output2: dict) -> dict:
         return {"agreement": "none", "detail": f"No overlap: {aspects1} vs {aspects2}"}
 
 
-def compute_majority_vote(out1: dict, out2: dict, out3: dict) -> dict:
+def should_skip_pass3(rec: dict) -> bool:
+    """Tiebreaker filter: should this record skip Pass 3?
+
+    Skip ONLY when both Pass 1 and Pass 2 succeeded AND have full agreement
+    (same has_modification and same aspect set). In every other case
+    (Pass 2 failed, partial/none agreement, etc.) Pass 3 must run as
+    tiebreaker / inter-annotator signal.
+    """
+    out1 = rec.get("teacher_output")
+    out2 = rec.get("second_teacher_output")
+    if out1 is None or out2 is None:
+        return False
+    agr = compute_pairwise_agreement(out1, out2)
+    return agr["agreement"] == "full"
+
+
+def compute_majority_vote(out1: dict, out2: dict, out3: dict,
+                          pass3_skipped: bool = False) -> dict:
     """
     Majority vote across 3 teacher outputs.
     Returns final_label, vote_method, needs_review, pairwise agreements.
+
+    FIX 2: thread_type is voted on among the contributing outputs
+    (no_mod branch no longer hardcodes "statement"). When 2/3 agree on
+    no_modification, the thread_type is the most common type among
+    those 2-3 no-mod outputs (ties broken by pass 1 > pass 2 > pass 3).
+
+    NEW (v10): selective routing. If pass3_skipped=True (Pass 1 ≡ Pass 2
+    full agreement caused us to skip Qwen), we treat the 2-pass agreement
+    as a unanimous "gemini_unanimous" decision rather than calling it
+    "majority" (which would be misleading — only 2 voters were polled).
     """
+    # ─── Selective routing: Pass 3 was deliberately skipped ─────────────
+    if pass3_skipped and out3 is None and out1 is not None and out2 is not None:
+        agr_1v2 = compute_pairwise_agreement(out1, out2)["agreement"]
+        has_mod = bool(out1.get("has_modification", False))
+
+        if has_mod:
+            # Both Gemini passes agree there's a modification with full
+            # aspect agreement — pick out1 (primary pass).
+            final = out1
+        else:
+            # Both agree no_modification — vote on thread_type.
+            types = [
+                out1.get("thread_type", "statement"),
+                out2.get("thread_type", "statement"),
+            ]
+            most_common_type = _Counter(types).most_common(1)[0][0]
+            final = {
+                "modifications": [],
+                "has_modification": False,
+                "thread_type": most_common_type,
+            }
+
+        return {
+            "final_label": final,
+            "vote_method": "gemini_unanimous",
+            "needs_review": False,
+            "votes": {
+                "has_mod_true": 2 if has_mod else 0,
+                "has_mod_false": 0 if has_mod else 2,
+            },
+            "agreement_1v2": agr_1v2,
+            "agreement_1v3": "skipped",
+            "agreement_2v3": "skipped",
+        }
+
+    # ─── Normal 3-pass (or partial) majority vote ───────────────────────
     outputs = [out1, out2, out3]
     valid = [o for o in outputs if o is not None]
 
@@ -723,14 +901,30 @@ def compute_majority_vote(out1: dict, out2: dict, out3: dict) -> dict:
     agr_1v3 = compute_pairwise_agreement(out1, out3)["agreement"] if out1 and out3 else "error"
     agr_2v3 = compute_pairwise_agreement(out2, out3)["agreement"] if out2 and out3 else "error"
 
+    # ─── Pick final label ───────────────────────────────────────────────
     if has_mod_votes >= 2:
+        # Majority says has_mod=True. Pick the mod-output with most modifications.
         mod_outputs = [o for o in valid if o.get("has_modification", False)]
         final = max(mod_outputs, key=lambda o: len(o.get("modifications", [])))
     elif has_mod_false >= 2:
-        final = {"modifications": [], "has_modification": False, "thread_type": "statement"}
+        # Majority says has_mod=False. Vote on thread_type instead of hardcoding.
+        no_mod_outputs = [o for o in valid if not o.get("has_modification", False)]
+        types = [o.get("thread_type", "statement") for o in no_mod_outputs]
+        # Tie-break by frequency, then by pass order (pass 1 wins ties)
+        # Counter.most_common preserves insertion order for ties in Python 3.7+
+        type_counts = _Counter(types)
+        most_common_type = type_counts.most_common(1)[0][0]
+        final = {
+            "modifications": [],
+            "has_modification": False,
+            "thread_type": most_common_type,
+        }
     else:
+        # Edge case: len(valid)==2 and they disagree on has_mod.
+        # Fall back to pass 1 if available.
         final = valid[0]
 
+    # ─── Decide vote_method and needs_review ────────────────────────────
     if has_mod_votes == 3 or has_mod_false == 3:
         if has_mod_votes == 3:
             a1 = {m.get("aspect") for m in (out1 or {}).get("modifications", [])}
@@ -808,7 +1002,6 @@ def backup_file(path: Path, suffix: str = ".bak") -> Path:
 # =============================================================================
 # GENERIC PASS RUNNER (used by pass 2 and 3)
 # =============================================================================
-
 def run_repass(todo: List[dict], teacher, output_field: str,
                model_field: str, pass_name: str,
                record_index: dict, batch_size: int = BATCH_SIZE,
@@ -816,10 +1009,14 @@ def run_repass(todo: List[dict], teacher, output_field: str,
                save_every_n_batches: int = 10):
     """
     Generic batch re-labeling pass for pass 2 and 3.
-    Labels threads and stores results in the specified output_field.
-    
-    Args:
-        save_every_n_batches: Save progress every N batches (default: 10 = 200 threads with batch_size=20)
+
+    v10.1 — now handles 503 overload separately from 429 rate-limit:
+      - 503 / model overloaded:  exponential backoff (60s → 120s → 240s, capped 300s)
+                                 indefinitely (does NOT count toward kill switch)
+      - 429 / rate limit:        15s sleep + retry (does NOT count toward kill switch)
+      - Auth failure:             abort immediately, no retry
+      - Transient (500/conn):     short sleep + retry, counts toward kill switch
+      - Other:                    advance past batch, counts toward kill switch
     """
     if not todo:
         print(f"✅ No records need {pass_name}!")
@@ -837,10 +1034,12 @@ def run_repass(todo: List[dict], teacher, output_field: str,
     stats = {
         "total": 0, "success": 0, "batch_errors": 0, "parse_failures": 0,
         "with_mods": 0, "no_mods": 0,
+        "rate_limit_hits": 0, "overload_hits": 0, "transient_hits": 0,
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    consecutive_errors = 0
+    consecutive_hard_errors = 0   # only counts 'transient'/'other', not overload/rate_limit
+    overload_streak = 0           # for exponential backoff
     idx = 0
     batch_num = 0
     batches_since_save = 0
@@ -849,27 +1048,62 @@ def run_repass(todo: List[dict], teacher, output_field: str,
         batch_num += 1
         batch = todo[idx:idx + batch_size]
 
-        results, error, is_rl = teacher.label_batch(batch)
+        results, error, _is_rl_legacy = teacher.label_batch(batch)
 
         if error or results is None:
+            err_kind = classify_api_error(Exception(error)) if error else "other"
             stats["batch_errors"] += 1
-            consecutive_errors += 1
-            print(f"  [Batch {batch_num}] ERROR: {(error or 'No results')[:100]}")
-            # CRITICAL FIX: on rate limit, wait and RETRY same batch (do NOT advance idx).
-            # Without this, rate-limited batches were silently skipped → data loss.
-            if is_rl:
-                wait_time = 15
-                print(f"  ⏳ Rate limited — waiting {wait_time}s before retry...")
+            short_err = (error or 'No results')[:120]
+            print(f"  [Batch {batch_num}] ERROR ({err_kind}): {short_err}")
+
+            if err_kind == "auth":
+                print(f"\n  ❌ Authentication failure — check your API key. Aborting.")
+                break
+
+            if err_kind == "overloaded":
+                # Exponential backoff: 60, 120, 240, 300, 300, ...
+                overload_streak += 1
+                stats["overload_hits"] += 1
+                wait_time = min(300, 60 * (2 ** (overload_streak - 1)))
+                print(f"  🔥 Server overloaded (streak={overload_streak}). "
+                      f"Waiting {wait_time}s before retry...")
                 time.sleep(wait_time)
-                continue  # retry same batch — do NOT increment idx
-            if consecutive_errors >= 5:
-                print(f"\n  ❌ 5 consecutive batch errors — stopping {pass_name}.")
+                continue  # retry same batch
+
+            # Any other recoverable error resets the overload streak
+            overload_streak = 0
+
+            if err_kind == "rate_limit":
+                stats["rate_limit_hits"] += 1
+                wait_time = 30
+                print(f"  ⏳ Rate limited (your quota). Waiting {wait_time}s before retry...")
+                time.sleep(wait_time)
+                continue  # retry same batch
+
+            if err_kind == "transient":
+                stats["transient_hits"] += 1
+                consecutive_hard_errors += 1
+                wait_time = 10
+                print(f"  ⚠ Transient error (consec={consecutive_hard_errors}). "
+                      f"Waiting {wait_time}s before retry...")
+                time.sleep(wait_time)
+                if consecutive_hard_errors >= 5:
+                    print(f"\n  ❌ 5 consecutive transient errors — stopping {pass_name}.")
+                    break
+                continue  # retry same batch
+
+            # err_kind == "other" — unknown error, advance past batch
+            consecutive_hard_errors += 1
+            if consecutive_hard_errors >= 5:
+                print(f"\n  ❌ 5 consecutive unknown errors — stopping {pass_name}.")
                 break
             idx += batch_size
             time.sleep(2)
             continue
-        else:
-            consecutive_errors = 0
+
+        # Success path
+        consecutive_hard_errors = 0
+        overload_streak = 0
 
         batch_ok = 0
         batch_fail = 0
@@ -901,11 +1135,12 @@ def run_repass(todo: List[dict], teacher, output_field: str,
         print(f"  [Batch {batch_num}: {done}/{total}] "
               f"+{batch_ok} ok, {batch_fail} fail | "
               f"mods={stats['with_mods']} ({pct:.0f}%) "
-              f"errs={stats['batch_errors']}")
+              f"errs={stats['batch_errors']} (rl={stats['rate_limit_hits']} "
+              f"503={stats['overload_hits']})")
 
         idx += batch_size
         batches_since_save += 1
-        
+
         # Incremental save every N batches
         if output_path and all_records and batches_since_save >= save_every_n_batches:
             print(f"  💾 Saving progress ({stats['success']} records labeled so far)...")
@@ -913,12 +1148,11 @@ def run_repass(todo: List[dict], teacher, output_field: str,
             write_all_records(all_records, output_path)
             batches_since_save = 0
             print(f"  ✓ Saved to {output_path}")
-        
+
         time.sleep(teacher.MIN_DELAY)
 
     stats["finished_at"] = datetime.now(timezone.utc).isoformat()
     return stats
-
 
 # =============================================================================
 # PASS 1: INITIAL LABELING (Gemini only)
@@ -992,6 +1226,7 @@ def run_pass1(input_path: str, output_path: str,
     teacher_name = gemini.model_name
     delay = GeminiTeacher.MIN_DELAY
     consecutive_errors = 0
+    overload_streak = 0
 
     stats = {
         "total": 0, "with_mods": 0, "no_mods": 0,
@@ -1003,7 +1238,7 @@ def run_pass1(input_path: str, output_path: str,
 
     thread_idx = 0
     batch_num = 0
-
+    
     while thread_idx < total_threads:
         batch_num += 1
         batch = threads[thread_idx:thread_idx + batch_size]
@@ -1011,22 +1246,53 @@ def run_pass1(input_path: str, output_path: str,
         results, error, is_rl = teacher.label_batch(batch)
 
         if error or results is None:
+            err_kind = classify_api_error(Exception(error)) if error else "other"
             stats["batch_errors"] += 1
-            consecutive_errors += 1
-            print(f"  [Batch {batch_num}] ERROR: {(error or 'No results')[:100]}")
-            if is_rl:
-                wait_time = 15
-                print(f"  ⏳ Rate limited — waiting {wait_time}s before retry...")
+            short_err = (error or 'No results')[:120]
+            print(f"  [Batch {batch_num}] ERROR ({err_kind}): {short_err}")
+
+            if err_kind == "auth":
+                print(f"\n  ❌ Authentication failure — check your API key. Aborting.")
+                break
+
+            if err_kind == "overloaded":
+                overload_streak += 1
+                wait_time = min(300, 60 * (2 ** (overload_streak - 1)))
+                print(f"  🔥 Server overloaded (streak={overload_streak}). "
+                      f"Waiting {wait_time}s before retry...")
+                time.sleep(wait_time)
+                continue  # retry same batch — overload doesn't count toward kill switch
+
+            overload_streak = 0  # reset on any non-overload error
+
+            if err_kind == "rate_limit":
+                wait_time = 30
+                print(f"  ⏳ Rate limited (your quota). Waiting {wait_time}s before retry...")
                 time.sleep(wait_time)
                 continue  # retry same batch
+
+            if err_kind == "transient":
+                consecutive_errors += 1
+                wait_time = 10
+                print(f"  ⚠ Transient error (consec={consecutive_errors}). "
+                      f"Waiting {wait_time}s before retry...")
+                time.sleep(wait_time)
+                if consecutive_errors >= 5:
+                    print(f"\n  ❌ 5 consecutive transient errors — stopping.")
+                    break
+                continue  # retry same batch
+
+            # 'other' — unknown, advance past
+            consecutive_errors += 1
             if consecutive_errors >= 5:
-                print(f"\n  ❌ 5 consecutive batch errors — stopping.")
+                print(f"\n  ❌ 5 consecutive unknown errors — stopping.")
                 break
             thread_idx += batch_size
             time.sleep(2)
             continue
         else:
             consecutive_errors = 0
+            overload_streak = 0
 
         batch_success = 0
         batch_fail = 0
@@ -1069,6 +1335,7 @@ def run_pass1(input_path: str, output_path: str,
                 "second_teacher_model": None,
                 "third_teacher_output": None,
                 "third_teacher_model": None,
+                "pass3_skipped": None,            # NEW (v10): set by Pass 3 tiebreaker filter
                 "agreement_1v2": None,
                 "agreement_1v3": None,
                 "agreement_2v3": None,
@@ -1177,18 +1444,32 @@ def run_pass2(output_path: str,
     for level, count in agreement_counts.items():
         pct = count / max(1, sum(agreement_counts.values())) * 100
         print(f"    {level:10s}  {count:5d}  ({pct:.1f}%)")
-    print(f"\n  Next step: run --third-pass")
+    # Preview Pass 3 quota savings if --third-pass runs in tiebreaker mode
+    full_pct = 100.0 * agreement_counts.get("full", 0) / max(1, sum(agreement_counts.values()))
+    print(f"\n  Tiebreaker preview: ~{full_pct:.0f}% of records have FULL agreement")
+    print(f"     and would be SKIPPED by Pass 3 in tiebreaker mode.")
+    print(f"\n  Next step: run --third-pass (tiebreaker mode is the default)")
     print(f"{'='*60}")
 
 
 # =============================================================================
-# PASS 3: INTER-ANNOTATOR (Cerebras Qwen 235B)
+# PASS 3: INTER-ANNOTATOR (Cerebras Qwen 235B) — TIEBREAKER MODE (default)
 # =============================================================================
 
 def run_pass3(output_path: str,
               cerebras_key: str = None, cerebras_model: str = None,
-              limit: int = None, batch_size: int = BATCH_SIZE):
-    """Pass 3: Re-label with Cerebras Qwen 235B (different model family)."""
+              limit: int = None, batch_size: int = BATCH_SIZE,
+              full_coverage: bool = False):
+    """Pass 3: Re-label with Cerebras Qwen 235B (different model family).
+
+    DEFAULT (tiebreaker mode): only records where Pass 1 ≢ Pass 2 are sent
+    to Qwen. Records with full Pass 1 ≡ Pass 2 agreement are flagged
+    pass3_skipped=True and treated as "gemini_unanimous" at finalize time.
+    Cuts Qwen API usage substantially (typically 30-70%).
+
+    Set full_coverage=True to send EVERY record to Qwen (legacy behavior,
+    research/comparison only).
+    """
 
     output_path = Path(output_path)
     if not output_path.exists():
@@ -1214,28 +1495,87 @@ def run_pass3(output_path: str,
     print(f"  Rate limits: 5 RPM, 14.4K RPD, 30K TPM, 65K context")
     print(f"  MIN_DELAY: {cerebras.MIN_DELAY}s between calls")
     print(f"  Batch size: {batch_size}")
+    print(f"  Mode: {'FULL COVERAGE (every record)' if full_coverage else 'TIEBREAKER (skip full-agreement records)'}")
 
     records = load_all_records(output_path)
     print(f"Loaded {len(records)} records from {output_path}")
 
-    todo = [r for r in records if r.get("third_teacher_output") is None]
+    # ─── Filter pending records (haven't been labeled or skipped yet) ───
+    all_pending = [
+        r for r in records
+        if r.get("third_teacher_output") is None
+        and not r.get("pass3_skipped", False)
+    ]
+
+    if not all_pending:
+        print("✅ All records already have pass 3 labels (or were skipped)!")
+        return
+
+    # ─── Tiebreaker filter (NEW v10) ────────────────────────────────────
+    skip_records = []
+    run_records = []
+    no_pass2_count = 0
+
+    if full_coverage:
+        run_records = all_pending
+    else:
+        for r in all_pending:
+            out2 = r.get("second_teacher_output")
+            if out2 is None:
+                # Pass 2 hasn't run for this record — can't decide, default to running Pass 3.
+                no_pass2_count += 1
+                run_records.append(r)
+            elif should_skip_pass3(r):
+                skip_records.append(r)
+            else:
+                run_records.append(r)
+
+    # Persist skip flags BEFORE making any API calls (in case of interruption)
+    if skip_records:
+        for r in skip_records:
+            r["pass3_skipped"] = True
+            r["agreement_1v3"] = "skipped"
+            r["agreement_2v3"] = "skipped"
+        backup_file(output_path, ".pre_pass3_skip.bak")
+        write_all_records(records, output_path)
+
+    print(f"\n{'─'*60}")
+    print(f"  TIEBREAKER FILTER")
+    print(f"{'─'*60}")
+    print(f"  Pending records:          {len(all_pending)}")
+    if not full_coverage:
+        print(f"  Skipped (Pass 1 ≡ Pass 2): {len(skip_records)}  → marked 'gemini_unanimous'")
+        if no_pass2_count:
+            print(f"  No Pass 2 yet (run anyway): {no_pass2_count}")
+    print(f"  Sending to Qwen:          {len(run_records)}")
+    if all_pending:
+        saved_pct = 100.0 * len(skip_records) / len(all_pending)
+        print(f"  Quota saved by tiebreaker: ~{saved_pct:.1f}%")
+    print(f"{'─'*60}\n")
+
+    todo = run_records
     if limit:
         todo = todo[:limit]
 
     if not todo:
-        print("✅ All records already have pass 3 labels!")
+        print("✅ Tiebreaker filter left nothing to send to Qwen — Pass 3 done.")
+        # Re-write final agreement state for skipped records and exit cleanly.
+        write_all_records(records, output_path)
         return
 
     record_index = {r["thread_id"]: r for r in records}
 
     stats = run_repass(todo, cerebras, "third_teacher_output", "third_teacher_model",
-                       "PASS 3 — Inter-annotator", record_index, batch_size,
+                       "PASS 3 — Inter-annotator (tiebreaker)", record_index, batch_size,
                        all_records=records, output_path=output_path)
 
-    # Compute pairwise agreements
+    # ─── Compute pairwise agreements (ONLY for records that got Pass 3) ─
     agr_1v3 = {"full": 0, "partial": 0, "none": 0, "error": 0}
     agr_2v3 = {"full": 0, "partial": 0, "none": 0, "error": 0}
     for rec in records:
+        # Skipped records keep their "skipped" markers — don't overwrite.
+        if rec.get("pass3_skipped"):
+            continue
         if rec.get("third_teacher_output") is not None:
             a13 = compute_pairwise_agreement(rec.get("teacher_output"), rec.get("third_teacher_output"))
             rec["agreement_1v3"] = a13["agreement"]
@@ -1254,50 +1594,179 @@ def run_pass3(output_path: str,
     stats_path = output_path.parent / "pass3_stats.json"
     stats["agreement_1v3"] = agr_1v3
     stats["agreement_2v3"] = agr_2v3
+    stats["mode"] = "full_coverage" if full_coverage else "tiebreaker"
+    stats["pass3_skipped_count"] = len(skip_records)
+    stats["pass3_run_count"] = len(run_records)
     with open(stats_path, 'w') as f:
         json.dump(stats, f, indent=2, ensure_ascii=False)
 
     print(f"\n{'='*60}")
-    print(f"  ✅ Pass 3 Done!")
+    print(f"  ✅ Pass 3 Done! (mode: {stats['mode']})")
     print(f"{'='*60}")
-    print(f"  Labeled:           {stats.get('success', 0)} threads")
-    print(f"    With mods:       {stats.get('with_mods', 0)}")
-    print(f"    No mods:         {stats.get('no_mods', 0)}")
-    print(f"    Parse failures:  {stats.get('parse_failures', 0)}")
-    print(f"  Agreement (pass1 vs pass3 — inter-annotator):")
+    print(f"  Skipped (gemini_unanimous): {len(skip_records)}")
+    print(f"  Sent to Qwen:               {stats.get('total', 0)}")
+    print(f"    Labeled successfully:     {stats.get('success', 0)}")
+    print(f"    With mods:                {stats.get('with_mods', 0)}")
+    print(f"    No mods:                  {stats.get('no_mods', 0)}")
+    print(f"    Parse failures:           {stats.get('parse_failures', 0)}")
+    print(f"\n  Agreement (pass1 vs pass3 — Qwen-labeled subset only):")
     for level, count in agr_1v3.items():
         pct = count / max(1, sum(agr_1v3.values())) * 100
         print(f"    {level:10s}  {count:5d}  ({pct:.1f}%)")
-    print(f"  Agreement (pass2 vs pass3):")
+    print(f"  Agreement (pass2 vs pass3 — Qwen-labeled subset only):")
     for level, count in agr_2v3.items():
         pct = count / max(1, sum(agr_2v3.values())) * 100
         print(f"    {level:10s}  {count:5d}  ({pct:.1f}%)")
-    print(f"\n  Next step: run --finalize to compute majority vote")
+    print(f"\n  Next step: run --finalize to compute majority vote + validate spans")
     print(f"{'='*60}")
 
 
 # =============================================================================
-# FINALIZE: MAJORITY VOTE
+# SPAN VALIDATION (catches teacher hallucinations — Bug #2 from triage)
+# =============================================================================
+
+def _normalize_for_span_check(s: str) -> str:
+    """Light normalization for span containment check.
+
+    We do NOT lowercase Hebrew (no case), but we collapse whitespace and
+    strip leading/trailing punctuation so that 'X.' still matches 'X' in
+    the source text. We keep the comparison strict otherwise — if a span
+    isn't a substring of the thread text after this, it's a hallucination.
+    """
+    if not s:
+        return ""
+    # Collapse runs of whitespace
+    s = " ".join(s.split())
+    # Strip a small set of trailing/leading punct that LLMs tend to add
+    s = s.strip(" \t\n\r.,!?;:\"'`׳״()[]{}")
+    return s
+
+
+def _span_in_thread(span: str, thread_text: str) -> bool:
+    """Return True iff span (after light normalization) appears in thread_text."""
+    span_n = _normalize_for_span_check(span)
+    if not span_n:
+        # Empty span after normalization — treat as hallucinated (LLM gave us nothing usable)
+        return False
+    text_n = _normalize_for_span_check(thread_text)
+    return span_n in text_n
+
+
+def validate_and_clean_spans(rec: dict) -> dict:
+    """Validate every span in rec['final_label'] against the thread's actual text.
+
+    Drops modifications whose span does not appear in
+    top_comment_text + replies_texts. If all modifications are dropped,
+    flips has_modification to False and clears the modifications list.
+
+    Adds a 'span_validation' diagnostic block to the record:
+        {
+          "checked": int,        # total mods inspected
+          "kept": int,
+          "dropped": int,
+          "dropped_examples": [{"span": str, "aspect": str, "source_comment": str}, ...],
+          "flipped_to_no_mod": bool,
+        }
+
+    Returns the (mutated) record.
+    """
+    final_label = rec.get("final_label") or {}
+    mods = final_label.get("modifications", []) or []
+
+    if not mods:
+        rec["span_validation"] = {
+            "checked": 0, "kept": 0, "dropped": 0,
+            "dropped_examples": [], "flipped_to_no_mod": False,
+        }
+        return rec
+
+    top = rec.get("top_comment_text", "") or ""
+    replies = rec.get("replies_texts", []) or []
+    full_text = top + "\n" + "\n".join(replies)
+
+    kept, dropped, dropped_examples = [], 0, []
+    for mod in mods:
+        span = mod.get("span", "") or ""
+        if _span_in_thread(span, full_text):
+            kept.append(mod)
+        else:
+            dropped += 1
+            if len(dropped_examples) < 5:  # cap to keep records small
+                dropped_examples.append({
+                    "span": span,
+                    "aspect": mod.get("aspect", ""),
+                    "source_comment": mod.get("source_comment", ""),
+                })
+
+    flipped = False
+    if dropped > 0:
+        final_label["modifications"] = kept
+        if len(kept) == 0:
+            # All mods were hallucinated — flip the thread to no_mod.
+            final_label["has_modification"] = False
+            # Preserve thread_type if the majority vote already set one,
+            # otherwise default to "statement".
+            if "thread_type" not in final_label:
+                final_label["thread_type"] = "statement"
+            flipped = True
+        rec["final_label"] = final_label
+
+    rec["span_validation"] = {
+        "checked": len(mods),
+        "kept": len(kept),
+        "dropped": dropped,
+        "dropped_examples": dropped_examples,
+        "flipped_to_no_mod": flipped,
+    }
+    return rec
+
+
+# =============================================================================
+# FINALIZE: MAJORITY VOTE  (with span validation hook + selective routing)
 # =============================================================================
 
 def run_finalize(output_path: str):
-    """Compute majority vote across all 3 passes and set final labels."""
+    """Compute majority vote across all 3 passes (or 2-pass gemini_unanimous
+    for tiebreaker-skipped records), set final labels, AND validate every
+    final span against the actual thread text.
+
+    Hallucinated spans (i.e. spans not found in top_comment_text +
+    replies_texts) are dropped from final_label.modifications. If all
+    mods for a thread are dropped, the thread is flipped to
+    has_modification=False so the training pipeline never sees a
+    phantom annotation.
+    """
 
     output_path = Path(output_path)
     records = load_all_records(output_path)
     print(f"Loaded {len(records)} records")
 
-    vote_stats = {"unanimous": 0, "majority": 0, "no_majority": 0, "insufficient": 0}
+    vote_stats = {
+        "unanimous": 0,
+        "majority": 0,
+        "no_majority": 0,
+        "insufficient": 0,
+        "gemini_unanimous": 0,   # NEW (v10): Pass 3 skipped via tiebreaker filter
+    }
     review_count = 0
     final_mods = 0
     final_no_mods = 0
+
+    # Span validation accumulators (Fix 1)
+    val_total_checked = 0
+    val_total_kept = 0
+    val_total_dropped = 0
+    val_threads_with_drops = 0
+    val_threads_flipped = 0
+    val_examples = []  # capped sample of dropped spans for the stats file
 
     for rec in records:
         out1 = rec.get("teacher_output")
         out2 = rec.get("second_teacher_output")
         out3 = rec.get("third_teacher_output")
+        pass3_skipped = bool(rec.get("pass3_skipped", False))
 
-        vote = compute_majority_vote(out1, out2, out3)
+        vote = compute_majority_vote(out1, out2, out3, pass3_skipped=pass3_skipped)
 
         rec["final_label"] = vote["final_label"]
         rec["vote_method"] = vote["vote_method"]
@@ -1306,11 +1775,30 @@ def run_finalize(output_path: str):
         rec["agreement_1v3"] = vote["agreement_1v3"]
         rec["agreement_2v3"] = vote["agreement_2v3"]
 
+        # ─── Span validation (Fix 1) ────────────────────────────────────
+        rec = validate_and_clean_spans(rec)
+        sv = rec.get("span_validation", {})
+        val_total_checked += sv.get("checked", 0)
+        val_total_kept += sv.get("kept", 0)
+        val_total_dropped += sv.get("dropped", 0)
+        if sv.get("dropped", 0) > 0:
+            val_threads_with_drops += 1
+            for ex in sv.get("dropped_examples", []):
+                if len(val_examples) < 50:
+                    val_examples.append({
+                        "thread_id": rec.get("thread_id", ""),
+                        **ex,
+                    })
+        if sv.get("flipped_to_no_mod", False):
+            val_threads_flipped += 1
+        # ────────────────────────────────────────────────────────────────
+
         if vote["vote_method"] in vote_stats:
             vote_stats[vote["vote_method"]] += 1
         if vote["needs_review"]:
             review_count += 1
-        if vote.get("final_label", {}).get("has_modification"):
+        # NB: count AFTER validation so the numbers reflect the cleaned data.
+        if rec.get("final_label", {}).get("has_modification"):
             final_mods += 1
         else:
             final_no_mods += 1
@@ -1318,8 +1806,24 @@ def run_finalize(output_path: str):
     backup_file(output_path, ".pre_finalize.bak")
     write_all_records(records, output_path)
 
-    stats = {"total": len(records), "vote_stats": vote_stats,
-             "needs_review": review_count, "final_mods": final_mods, "final_no_mods": final_no_mods}
+    stats = {
+        "total": len(records),
+        "vote_stats": vote_stats,
+        "needs_review": review_count,
+        "final_mods": final_mods,
+        "final_no_mods": final_no_mods,
+        "span_validation": {
+            "total_modifications_checked": val_total_checked,
+            "kept": val_total_kept,
+            "dropped_hallucinations": val_total_dropped,
+            "threads_with_at_least_one_drop": val_threads_with_drops,
+            "threads_flipped_to_no_mod": val_threads_flipped,
+            "drop_rate_pct": (
+                100.0 * val_total_dropped / max(1, val_total_checked)
+            ),
+            "sample_dropped_spans": val_examples,
+        },
+    }
     stats_path = output_path.parent / "final_stats.json"
     with open(stats_path, 'w') as f:
         json.dump(stats, f, indent=2, ensure_ascii=False)
@@ -1328,16 +1832,27 @@ def run_finalize(output_path: str):
     print(f"\n{'='*60}")
     print(f"  ✅ Finalized — Majority Vote Complete!")
     print(f"{'='*60}")
-    print(f"  Total records:     {total}")
-    print(f"  Vote results:")
-    for method, count in vote_stats.items():
-        pct = count / max(1, total) * 100
-        print(f"    {method:15s}  {count:5d}  ({pct:.1f}%)")
-    print(f"  Final labels:")
-    print(f"    With modification: {final_mods} ({final_mods/max(1,total)*100:.1f}%)")
-    print(f"    No modification:   {final_no_mods} ({final_no_mods/max(1,total)*100:.1f}%)")
+    print(f"  Total records:       {total}")
+    print(f"  Final has_mod=True:  {final_mods}")
+    print(f"  Final has_mod=False: {final_no_mods}")
     print(f"  Needs manual review: {review_count}")
-    print(f"  Output: {output_path}")
+    print(f"  Vote breakdown:")
+    for k, v in vote_stats.items():
+        pct = 100.0 * v / max(1, total)
+        print(f"    {k:18s} {v:5d}  ({pct:.1f}%)")
+    print(f"\n  --- Span Validation (Fix 1) ---")
+    print(f"  Modifications checked:   {val_total_checked}")
+    print(f"  Kept (span found):       {val_total_kept}")
+    print(f"  Dropped (hallucinated):  {val_total_dropped} "
+          f"({100.0 * val_total_dropped / max(1, val_total_checked):.2f}%)")
+    print(f"  Threads with ≥1 drop:    {val_threads_with_drops}")
+    print(f"  Threads flipped to no_mod after drops: {val_threads_flipped}")
+    if val_examples:
+        print(f"\n  Sample of dropped (hallucinated) spans:")
+        for ex in val_examples[:5]:
+            print(f"    [{ex.get('aspect','?'):14s}] '{ex.get('span','')[:40]}'  "
+                  f"(thread {ex.get('thread_id','?')[:24]})")
+    print(f"\n  Stats saved to: {stats_path}")
     print(f"{'='*60}")
 
 
@@ -1373,20 +1888,22 @@ def show_agreement_stats(output_path: str):
 
     has_p2 = sum(1 for r in records if r.get("second_teacher_output") is not None)
     has_p3 = sum(1 for r in records if r.get("third_teacher_output") is not None)
+    p3_skipped = sum(1 for r in records if r.get("pass3_skipped"))
     has_final = sum(1 for r in records if r.get("final_label") is not None)
 
     print(f"\n{'='*60}")
     print(f"  AGREEMENT STATISTICS")
     print(f"{'='*60}")
-    print(f"  Total records:     {total}")
-    print(f"  Pass 2 done:       {has_p2}")
-    print(f"  Pass 3 done:       {has_p3}")
-    print(f"  Finalized:         {has_final}")
+    print(f"  Total records:              {total}")
+    print(f"  Pass 2 done:                {has_p2}")
+    print(f"  Pass 3 done (Qwen-labeled): {has_p3}")
+    print(f"  Pass 3 skipped (tiebreaker): {p3_skipped}  → 'gemini_unanimous'")
+    print(f"  Finalized:                  {has_final}")
 
     for pair, field_name in [("Pass1 vs Pass2", "agreement_1v2"),
                              ("Pass1 vs Pass3", "agreement_1v3"),
                              ("Pass2 vs Pass3", "agreement_2v3")]:
-        counts = {"full": 0, "partial": 0, "none": 0, "error": 0}
+        counts = {"full": 0, "partial": 0, "none": 0, "error": 0, "skipped": 0}
         counted = 0
         for r in records:
             val = r.get(field_name)
@@ -1411,7 +1928,7 @@ def show_agreement_stats(output_path: str):
         print(f"\n  Majority vote ({has_final} records):")
         for method, count in sorted(vote_counts.items()):
             pct = count / max(1, has_final) * 100
-            print(f"    {method:15s}  {count:5d}  ({pct:.1f}%)")
+            print(f"    {method:18s}  {count:5d}  ({pct:.1f}%)")
         print(f"  Needs manual review: {review_count}")
 
     model_counts = {}
@@ -1431,7 +1948,7 @@ def show_agreement_stats(output_path: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Three-Pass Silver Label Generator with Majority Vote",
+        description="Three-Pass Silver Label Generator with Majority Vote (v10 — Tiebreaker Pass 3)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Workflow:
@@ -1442,10 +1959,14 @@ Workflow:
   2. Pass 2 — Same Gemini, temp=0.3 (intra-annotator):
      python -m src.teacher_labeling.generate_labels --second-pass --limit 5000 --batch-size 20
 
-  3. Pass 3 — Cerebras Qwen 235B (inter-annotator):
-     python -m src.teacher_labeling.generate_labels --third-pass --limit 5000 --batch-size 20
+  3. Pass 3 — TIEBREAKER MODE (default): Qwen labels only records where
+     Pass 1 ≢ Pass 2 (records with full agreement are skipped):
+     python -m src.teacher_labeling.generate_labels --third-pass --batch-size 10
 
-  4. Finalize — Majority vote, flag disagreements:
+     Or, full coverage (legacy — every record sent to Qwen):
+     python -m src.teacher_labeling.generate_labels --third-pass --full-coverage --batch-size 10
+
+  4. Finalize — Majority vote + span validation:
      python -m src.teacher_labeling.generate_labels --finalize
 
   5. Export disagreements for manual review:
@@ -1459,9 +1980,11 @@ Workflow:
     parser.add_argument("--second-pass", action="store_true",
                         help="Pass 2: same Gemini, temp=0.3 (intra-annotator)")
     parser.add_argument("--third-pass", action="store_true",
-                        help="Pass 3: Cerebras Qwen 235B (inter-annotator)")
+                        help="Pass 3: Cerebras Qwen 235B, TIEBREAKER mode by default")
+    parser.add_argument("--full-coverage", action="store_true",
+                        help="Pass 3: send EVERY record to Qwen (disable tiebreaker filter)")
     parser.add_argument("--finalize", action="store_true",
-                        help="Compute majority vote and set final labels")
+                        help="Compute majority vote + validate spans + set final labels")
     parser.add_argument("--export-review", action="store_true",
                         help="Export disagreements to needs_review.jsonl")
     parser.add_argument("--agreement-stats", action="store_true",
@@ -1505,6 +2028,7 @@ Workflow:
             cerebras_model=args.cerebras_model,
             limit=args.limit,
             batch_size=args.batch_size,
+            full_coverage=args.full_coverage,
         )
         return
 
