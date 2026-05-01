@@ -22,6 +22,14 @@ BIO_ID2LABEL = {
     7: "B-ADDITION",      8: "I-ADDITION",
 }
 
+IO_ID2LABEL = {
+    0: "O",
+    1: "I-SUBSTITUTION",
+    2: "I-QUANTITY",
+    3: "I-TECHNIQUE",
+    4: "I-ADDITION",
+}
+
 
 class EvalDataset(Dataset):
     def __init__(self, path):
@@ -67,7 +75,27 @@ def evaluate_crf(ckpt_dir, test_file, output_dir, model_name, batch_size=32):
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     print(f"Loaded checkpoint from {ckpt_path}")
 
-    model = BertCRFModel(model_name=model_name, num_labels=9, dropout_rate=0.1)
+    # Auto-detect num_labels from checkpoint
+    # The classifier/emission layer shape tells us the label count
+    state_dict = ckpt["model_state_dict"]
+    detected_labels = None
+    for key in state_dict:
+        if "classifier" in key or "emission" in key or "hidden2tag" in key:
+            shape = state_dict[key].shape
+            if len(shape) >= 1:
+                detected_labels = shape[0]
+                break
+    if detected_labels is None:
+        # Fallback: check CRF transitions matrix (num_labels x num_labels)
+        for key in state_dict:
+            if "crf" in key and "transitions" in key:
+                detected_labels = state_dict[key].shape[0]
+                break
+    num_labels = detected_labels if detected_labels else 9
+    id2label = IO_ID2LABEL if num_labels == 5 else BIO_ID2LABEL
+    print(f"Detected {num_labels} labels -> {'IO' if num_labels == 5 else 'BIO'} scheme")
+
+    model = BertCRFModel(model_name=model_name, num_labels=num_labels, dropout_rate=0.1)
     model.load_state_dict(ckpt["model_state_dict"], strict=False)
     model.to(device)
     model.eval()
@@ -96,8 +124,8 @@ def evaluate_crf(ckpt_dir, test_file, output_dir, model_name, batch_size=32):
                 for j, (p, g) in enumerate(zip(pred_seq, gold_seq)):
                     if g == -100:
                         continue
-                    pred_tags.append(BIO_ID2LABEL.get(p, "O"))
-                    gold_tags.append(BIO_ID2LABEL.get(g, "O"))
+                    pred_tags.append(id2label.get(p, "O"))
+                    gold_tags.append(id2label.get(g, "O"))
                 all_preds.append(pred_tags)
                 all_labels.append(gold_tags)
 
