@@ -35,7 +35,7 @@ RESULT_BASE="results/hebert"
 # === Fix 5: per-model tokenized gold with auto-regeneration ===
 # Derive slug from this script's parent folder name.
 # dictabert_crf shares the dictabert tokenizer -> reuse its tokenized gold.
-MODEL_SLUG="$(basename "$(dirname "$0")")"
+MODEL_SLUG="hebert"
 if [ "$MODEL_SLUG" = "dictabert_crf" ]; then
     GOLD_SLUG="dictabert"
 else

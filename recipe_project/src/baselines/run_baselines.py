@@ -173,7 +173,7 @@ def main():
     print(f"Loaded {len(examples)} examples from {test_path}")
 
     # Compute label distribution from training data
-    train_path = data_dir / "train.jsonl"
+    train_path = data_dir / "train_merged.jsonl"
     label_counts = Counter()
     with open(train_path, 'r', encoding='utf-8') as f:
         for line in f:

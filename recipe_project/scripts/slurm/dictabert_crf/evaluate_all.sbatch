@@ -35,7 +35,7 @@ RESULT_BASE="results/dictabert_crf"
 # === Fix 5: per-model tokenized gold with auto-regeneration ===
 # Derive slug from this script's parent folder name.
 # dictabert_crf shares the dictabert tokenizer -> reuse its tokenized gold.
-MODEL_SLUG="$(basename "$(dirname "$0")")"
+MODEL_SLUG="dictabert_crf"
 if [ "$MODEL_SLUG" = "dictabert_crf" ]; then
     GOLD_SLUG="dictabert"
 else
@@ -66,8 +66,9 @@ for vdir in $CKPT_BASE/*/; do
 
     # --- Find trained model ---
     MP=""
+    IS_PT=0
     [ -d "$vdir/best_model" ] && MP="$vdir/best_model"
-    [ -f "$vdir/best_model.pt" ] && MP="$vdir/best_model.pt"
+    if [ -f "$vdir/best_model.pt" ]; then MP="$vdir"; IS_PT=1; fi
     [ -f "$vdir/pytorch_model.bin" ] && MP="$vdir"
     [ -f "$vdir/model.safetensors" ] && MP="$vdir"
 
@@ -122,11 +123,19 @@ for vdir in $CKPT_BASE/*/; do
     # Evaluate on GOLD set (primary — always same format)
     if [ -f "$GOLD" ]; then
         echo "  → Gold set evaluation..."
-        python -m src.evaluation.evaluate \
-            --model-path "$MP" \
-            --test-file "$GOLD" \
-            --output-dir "$RDIR/gold" \
-            --bootstrap 2>&1 | tee "$RDIR/gold_eval.log"
+        if [ "$IS_PT" = "1" ]; then
+            python -m scripts.local.evaluate_crf \
+                --ckpt-dir "$MP" \
+                --test-file "$GOLD" \
+                --output-dir "$RDIR/gold" \
+                --model-name "dicta-il/dictabert" 2>&1 | tee "$RDIR/gold_eval.log"
+        else
+            python -m src.evaluation.evaluate \
+                --model-path "$MP" \
+                --test-file "$GOLD" \
+                --output-dir "$RDIR/gold" \
+                --bootstrap 2>&1 | tee "$RDIR/gold_eval.log"
+        fi
     else
         echo "  ⚠ Gold file not found: $GOLD"
     fi
