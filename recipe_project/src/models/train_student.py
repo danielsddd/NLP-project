@@ -342,7 +342,7 @@ def train(args):
     print(f"\nTokenizer: {tokenizer.__class__.__name__} ({args.model})")
 
     # ─── Load datasets with re-tokenization ──────────────────────────
-    train_path = data_dir / "train.jsonl"
+    train_path = data_dir / "train_merged.jsonl"
     val_path = data_dir / "val.jsonl"
 
     if not train_path.exists():
