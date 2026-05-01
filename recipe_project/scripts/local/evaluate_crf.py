@@ -31,6 +31,38 @@ IO_ID2LABEL = {
 }
 
 
+def convert_io_to_bio(tags):
+    """Convert IO tag sequence to BIO so seqeval counts entities correctly.
+
+    Rule: The first I-X token after an O or a different I-Y becomes B-X.
+    Consecutive same-type I-X tokens after the first become I-X.
+    This ensures seqeval sees proper entity boundaries.
+    """
+    bio_tags = []
+    prev_type = None
+    for tag in tags:
+        if tag == "O":
+            bio_tags.append("O")
+            prev_type = None
+        elif tag.startswith("I-"):
+            entity_type = tag[2:]  # e.g., "SUBSTITUTION"
+            if prev_type == entity_type:
+                bio_tags.append(f"I-{entity_type}")
+            else:
+                bio_tags.append(f"B-{entity_type}")
+            prev_type = entity_type
+        else:
+            # Already BIO format, pass through
+            bio_tags.append(tag)
+            if tag.startswith("B-"):
+                prev_type = tag[2:]
+            elif tag.startswith("I-"):
+                prev_type = tag[2:]
+            else:
+                prev_type = None
+    return bio_tags
+
+
 class EvalDataset(Dataset):
     def __init__(self, path):
         self.examples = []
@@ -92,8 +124,9 @@ def evaluate_crf(ckpt_dir, test_file, output_dir, model_name, batch_size=32):
                 detected_labels = state_dict[key].shape[0]
                 break
     num_labels = detected_labels if detected_labels else 9
-    id2label = IO_ID2LABEL if num_labels == 5 else BIO_ID2LABEL
-    print(f"Detected {num_labels} labels -> {'IO' if num_labels == 5 else 'BIO'} scheme")
+    is_io_scheme = (num_labels == 5)
+    id2label = IO_ID2LABEL if is_io_scheme else BIO_ID2LABEL
+    print(f"Detected {num_labels} labels -> {'IO' if is_io_scheme else 'BIO'} scheme")
 
     model = BertCRFModel(model_name=model_name, num_labels=num_labels, dropout_rate=0.1)
     model.load_state_dict(ckpt["model_state_dict"], strict=False)
@@ -126,6 +159,10 @@ def evaluate_crf(ckpt_dir, test_file, output_dir, model_name, batch_size=32):
                         continue
                     pred_tags.append(id2label.get(p, "O"))
                     gold_tags.append(id2label.get(g, "O"))
+                # Convert IO→BIO for correct seqeval span-level evaluation
+                if is_io_scheme:
+                    pred_tags = convert_io_to_bio(pred_tags)
+                    gold_tags = convert_io_to_bio(gold_tags)
                 all_preds.append(pred_tags)
                 all_labels.append(gold_tags)
 

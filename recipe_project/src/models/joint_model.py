@@ -63,6 +63,7 @@ class BertCRFModel(nn.Module):
         num_labels: int = 9,
         dropout_rate: float = 0.1,
         class_weights: torch.Tensor = None,
+        focal_gamma: float = 0.0,
     ):
         super().__init__()
 
@@ -84,6 +85,10 @@ class BertCRFModel(nn.Module):
             self.register_buffer("class_weights", class_weights)
         else:
             self.class_weights = None
+
+        # Focal loss: gamma > 0 downweights easy tokens in emission scores
+        # gamma=0 disables focal (standard CRF). gamma=2.0 is typical.
+        self.focal_gamma = focal_gamma
 
     def _get_emissions(
         self,
@@ -153,6 +158,21 @@ class BertCRFModel(nn.Module):
 
             # Replace -100 with 0 (O tag) -- CRF needs valid indices everywhere
             crf_labels[crf_labels == -100] = 0
+
+            # Focal emission reweighting: reduce emission scores for
+            # easy-to-classify tokens so CRF focuses on hard cases
+            if self.focal_gamma > 0:
+                with torch.no_grad():
+                    probs = torch.softmax(emissions, dim=-1)
+                    # Gather the probability of the correct class
+                    gold_probs = probs.gather(2, crf_labels.unsqueeze(-1)).squeeze(-1)
+                    # Focal weight: (1 - p_correct)^gamma
+                    focal_weight = (1.0 - gold_probs) ** self.focal_gamma
+                    # Zero out positions we don't care about
+                    focal_weight = focal_weight * crf_mask.float()
+                    # Normalize to keep scale stable
+                    focal_weight = focal_weight / (focal_weight.mean() + 1e-8)
+                emissions = emissions * focal_weight.unsqueeze(-1)
 
             log_likelihood = self.crf(
                 emissions,

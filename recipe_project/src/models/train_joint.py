@@ -279,6 +279,7 @@ def train(args):
         num_labels=len(class_weights) if class_weights is not None else 9,
         dropout_rate=args.dropout,
         class_weights=class_weights,
+        focal_gamma=args.focal_gamma,
     )
     model.to(device)
 
@@ -499,6 +500,9 @@ def main():
 
     parser.add_argument("--neg-ratio", type=float, default=None,
                         help="Neg:pos downsampling ratio (e.g. 3.0)")
+    parser.add_argument("--focal-gamma", type=float, default=0.0,
+                        help="Focal loss gamma for CRF emission reweighting. "
+                             "0=disabled, 2.0=standard focal. Downweights easy tokens.")
 
     # WandB (optional)
     parser.add_argument("--wandb", action="store_true",

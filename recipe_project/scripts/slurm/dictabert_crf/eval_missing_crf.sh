@@ -24,13 +24,24 @@ echo "GOLD EVALUATION: all missing dictabert_crf configs"
 echo "Job ID: $SLURM_JOB_ID  Node: $(hostname)  Start: $(date)"
 echo "=================================================="
 
-GOLD="data/gold_validation/gold_tokenized_dictabert.jsonl"
-if [ ! -s "$GOLD" ]; then
-    echo "Regenerating tokenized gold..."
+GOLD_BIO="data/gold_validation/gold_tokenized_dictabert.jsonl"
+GOLD_IO="data/gold_validation/gold_tokenized_dictabert_io.jsonl"
+
+if [ ! -s "$GOLD_BIO" ]; then
+    echo "Regenerating tokenized gold (BIO)..."
     python scripts/local/prepare_gold_for_eval.py --all \
         || { echo "FATAL: gold tokenization failed"; exit 1; }
 fi
-echo "Gold file: $GOLD ($(wc -l < $GOLD) records)"
+if [ ! -s "$GOLD_IO" ]; then
+    echo "Regenerating tokenized gold (IO)..."
+    python scripts/local/prepare_gold_for_eval.py \
+        --model dicta-il/dictabert --scheme IO \
+        --output "$GOLD_IO" \
+        || { echo "FATAL: IO gold tokenization failed"; exit 1; }
+fi
+GOLD="$GOLD_BIO"
+echo "Gold BIO: $GOLD_BIO ($(wc -l < $GOLD_BIO) records)"
+echo "Gold IO:  $GOLD_IO ($(wc -l < $GOLD_IO) records)"
 
 # -------------------------------------------------------
 # Helper: run gold eval for one CRF config
@@ -42,25 +53,27 @@ run_eval() {
     local ckpt_dir="$1"
     local out_dir="$2"
     local silver_test="$3"
+    local gold_file="${4:-$GOLD_BIO}"  # Optional 4th arg: gold file override
     local vname=$(basename "$ckpt_dir")
 
     echo ""
     echo "--- Evaluating: $vname ---"
     echo "    ckpt:   $ckpt_dir"
     echo "    silver: $silver_test"
+    echo "    gold:   $gold_file"
 
     if [ ! -f "$ckpt_dir/best_model.pt" ]; then
         echo "    SKIP: no best_model.pt found"
         return
     fi
 
-    # Gold eval (always same gold file)
+    # Gold eval
     if [ ! -f "$out_dir/gold/evaluation_results.json" ]; then
         echo "    → Gold eval..."
         mkdir -p "$out_dir/gold"
         python -m scripts.local.evaluate_crf \
             --ckpt-dir   "$ckpt_dir" \
-            --test-file  "$GOLD" \
+            --test-file  "$gold_file" \
             --output-dir "$out_dir/gold" \
             --model-name "dicta-il/dictabert" 2>&1 | tee "$out_dir/gold_eval.log"
     else
@@ -98,7 +111,7 @@ run_eval "$RBASE/A5_crf_data_25pct"        "$RBASE/A5_crf_data_25pct"        "da
 run_eval "$RBASE/A5_crf_data_50pct"        "$RBASE/A5_crf_data_50pct"        "data/processed_frac50/test.jsonl"
 run_eval "$RBASE/A5_crf_data_75pct"        "$RBASE/A5_crf_data_75pct"        "data/processed_frac75/test.jsonl"
 run_eval "$RBASE/A6_crf_no_enriched"       "$RBASE/A6_crf_no_enriched"       "data/processed_no_enriched/test.jsonl"
-run_eval "$RBASE/A7_crf_io_scheme"         "$RBASE/A7_crf_io_scheme"         "data/processed_io/test.jsonl"
+run_eval "$RBASE/A7_crf_io_scheme"         "$RBASE/A7_crf_io_scheme"         "data/processed_io/test.jsonl"          "$GOLD_IO"
 run_eval "$RBASE/A8_crf_unanimous"         "$RBASE/A8_crf_unanimous"         "data/processed_unanimous/test.jsonl"
 
 # -------------------------------------------------------
@@ -108,7 +121,7 @@ run_eval "$MBASE/P3_crf_downsample_2"      "$RBASE/P3_crf_downsample_2"      "da
 run_eval "$MBASE/P3_crf_downsample_4"      "$RBASE/P3_crf_downsample_4"      "data/processed_ds4/test.jsonl"
 run_eval "$MBASE/P4_crf_thread_aware"      "$RBASE/P4_crf_thread_aware"      "data/processed_thread_aware/test.jsonl"
 run_eval "$MBASE/P5_crf_thread_no_enriched" "$RBASE/P5_crf_thread_no_enriched" "data/processed_thread_aware/test.jsonl"
-run_eval "$MBASE/P10_crf_thread_aware_io"  "$RBASE/P10_crf_thread_aware_io"  "data/processed_thread_aware_io/test.jsonl"
+run_eval "$MBASE/P10_crf_thread_aware_io"  "$RBASE/P10_crf_thread_aware_io"  "data/processed_thread_aware_io/test.jsonl"  "$GOLD_IO"
 
 echo ""
 echo "=================================================="

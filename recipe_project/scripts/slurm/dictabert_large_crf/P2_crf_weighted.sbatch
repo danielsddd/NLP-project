@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=dlarge_A1c
+#SBATCH --job-name=dlarge_crf_P2
 #SBATCH --partition=studentkillable
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="titan_xp|geforce_rtx_2080"
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
-#SBATCH --time=10:00:00
-#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/dictabert_large/%j_A1c_weights_only.out
-#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/dictabert_large/%j_A1c_weights_only.err
+#SBATCH --time=12:00:00
+#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/dictabert_large_crf/%j_P2_crf_weighted.out
+#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/dictabert_large_crf/%j_P2_crf_weighted.err
 
 USER_DIR="/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2"
 PROJECT_DIR="$USER_DIR/recipe_modification_extraction/recipe_project"
@@ -18,20 +18,16 @@ export TRANSFORMERS_CACHE=$HF_HOME
 export TOKENIZERS_PARALLELISM=false
 cd $PROJECT_DIR
 
-mkdir -p results/dictabert_large/A1c_weights_only
+mkdir -p models/checkpoints/dictabert_large_crf/P2_crf_weighted
 
-echo "DictaBERT-Large A1c (weights only, no focal) | Job: $SLURM_JOB_ID | Start: $(date)"
-
-python -m src.models.train_student \
-    --model dicta-il/dictabert-large \
+python -m src.models.train_joint \
+    --model "dicta-il/dictabert-large" \
     --data-dir data/processed_v2 \
     --train-file train_merged.jsonl \
-    --output-dir results/dictabert_large/A1c_weights_only \
+    --output-dir models/checkpoints/dictabert_large_crf/P2_crf_weighted \
     --epochs 10 \
     --batch-size 8 \
     --lr 2e-5 \
     --patience 3 \
     --seed 42 \
-    --class-weights
-
-echo "DONE. End: $(date)"
+    --class-weights-file data/processed_v2/stats_merged.json
