@@ -6,7 +6,7 @@
 #SBATCH --job-name=dict_A2_crf_dow
 #SBATCH --partition=studentkillable
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="geforce_rtx_3090|a5000|a6000"
+#SBATCH --constraint="titan_xp|geforce_rtx_2080"
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
 #SBATCH --time=10:00:00

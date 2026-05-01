@@ -1,6 +1,6 @@
 #!/bin/bash
 # Preprocessing: Default — ratio 3.0, BIO, merged
-# Output: data/processed/
+# Output: data/processed_v2/
 
 #SBATCH --job-name=prep_default
 #SBATCH --partition=studentkillable
@@ -22,18 +22,18 @@ export TOKENIZERS_PARALLELISM=false
 cd $PROJECT_DIR
 
 echo "PREPROCESSING: Default — ratio 3.0, BIO, merged"
-echo "Output: data/processed"
+echo "Output: data/processed_v2"
 
 [ ! -f "data/silver_labels/teacher_output.jsonl" ] && echo "ERROR: teacher_output.jsonl missing!" && exit 1
 
-mkdir -p data/processed
+mkdir -p data/processed_v2
 
 python -m src.preprocessing.prepare_data_merged \
     --original data/silver_labels/teacher_output.jsonl \
     --enriched data/silver_labels/threads_positives_focus_labeled.jsonl \
-    --output-dir data/processed \
+    --output-dir data/processed_v2 \
     --model dicta-il/dictabert \
     --downsample-ratio 3.0
 
-[ $? -eq 0 ] && echo "DONE:" && wc -l data/processed/*.jsonl || (echo "FAILED"; exit 1)
+[ $? -eq 0 ] && echo "DONE:" && wc -l data/processed_v2/*.jsonl || (echo "FAILED"; exit 1)
 echo "End: $(date)"

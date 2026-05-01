@@ -1,12 +1,323 @@
 {
-  "total": 5016,
+  "total": 5019,
   "vote_stats": {
-    "unanimous": 3955,
-    "majority": 1061,
-    "no_majority": 0,
-    "insufficient": 0
+    "unanimous": 0,
+    "majority": 279,
+    "no_majority": 2,
+    "insufficient": 0,
+    "gemini_unanimous": 4738
   },
-  "needs_review": 0,
-  "final_mods": 1391,
-  "final_no_mods": 3625
+  "needs_review": 2,
+  "final_mods": 901,
+  "final_no_mods": 4118,
+  "span_validation": {
+    "total_modifications_checked": 1238,
+    "kept": 1157,
+    "dropped_hallucinations": 81,
+    "threads_with_at_least_one_drop": 72,
+    "threads_flipped_to_no_mod": 58,
+    "drop_rate_pct": 6.54281098546042,
+    "sample_dropped_spans": [
+      {
+        "thread_id": "UgwZd2V6EzN09MpMNZV4AaABAg",
+        "span": "קופסאות שמורים עגבניות מרוסקות במקום עגבניות שרי",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_2"
+      },
+      {
+        "thread_id": "UgzzXWc3pRFSFFDoVf14AaABAg",
+        "span": "החלף בקינואה",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "Ugw58X8krIwf8nOApMR4AaABAg",
+        "span": "שמנת צמחית במקום קרם קוקוס",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_2"
+      },
+      {
+        "thread_id": "UgxT4q7rHhaZa8R2BEh4AaABAg",
+        "span": "ממרח שוקולד צ'וקטה במקום",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "UgzRSohU5Hg6TpT7VTV4AaABAg",
+        "span": "יותר קטשופ",
+        "aspect": "QUANTITY",
+        "source_comment": "top"
+      },
+      {
+        "thread_id": "UgzRSohU5Hg6TpT7VTV4AaABAg",
+        "span": "רוטב פיצה במקום קטשופ",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "Ugwk-0fqTbsGhMsbeY14AaABAg",
+        "span": "שמנת צמחית במקום שמנת",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "Ugwk-0fqTbsGhMsbeY14AaABAg",
+        "span": "חלב סויה במקום שמנת",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "Ugwk-0fqTbsGhMsbeY14AaABAg",
+        "span": "מעדן סויה וניל במקום שמנת",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "UgwUisTl--9o_xcsWyR4AaABAg",
+        "span": "תפוח עץ מגורד במקום בננה",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "UgwUisTl--9o_xcsWyR4AaABAg",
+        "span": "גזר מגורד במקום בננה",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "Ugy2dj9hjmeO8YdnvD94AaABAg",
+        "span": "שמה בקערה מי ברז מערבבת עם הידיים מעט",
+        "aspect": "TECHNIQUE",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "UgwDjNToFpo-Ncy029h4AaABAg",
+        "span": "תחליף סוכר... של סטיביה",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "UgzYLZ_YisQeu2xL3RJ4AaABAg",
+        "span": "תבלינים וחרדל ששמתי",
+        "aspect": "ADDITION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "UgwHHS5SyEM3kY6WhfB4AaABAg",
+        "span": "גזר במקום תפוחים",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "Ugw5FTQdsvZq3jGdY0l4AaABAg",
+        "span": "תבנית חד פעמית בינונית",
+        "aspect": "TECHNIQUE",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "UgwImUtkteDyVnQRJW14AaABAg",
+        "span": "להוסיף שום",
+        "aspect": "ADDITION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "Ugx_qMzz50UDiXbZ0V54AaABAg",
+        "span": "גבינה קשה עירקית מגורדת במקום גאודה",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "top"
+      },
+      {
+        "thread_id": "Ugwn2Inh_Q-eU2m-HE54AaABAg",
+        "span": "ציפוי עם ריבת חלב",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "UgwEyYRHWV88JO5GgTh4AaABAg",
+        "span": "שלושת רבעי כוס קמח מצה דק לעוגה ורבע כוס קמח תפוחי אדמה או קורנפלור או קמח אורז במקום כוס אחת של קמח לבן",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "Ugx_i9zElg3RlQUCjVx4AaABAg",
+        "span": "שלושת רבעי קמח מצה דק לעוגה ורבע כוס קמח תפוחי אדמה או קורנפלור תחליף לכוס קמח לבן רגיל",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "UgxV850Tl9Xh0nxFoSF4AaABAg",
+        "span": "שדרוג עם פרגיות",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "Ugycieqcq6faAkbxuA94AaABAg",
+        "span": "שמנת צמחית במקום שמנת מתוקה",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "Ugycieqcq6faAkbxuA94AaABAg",
+        "span": "מרגרינה מומסת במקום חמאה",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "UgyUvmV16Hp2jSI0Old4AaABAg",
+        "span": "להכניס לתנור כל הלילה",
+        "aspect": "TECHNIQUE",
+        "source_comment": "top"
+      },
+      {
+        "thread_id": "UgyRNsW3MtzaMkXOuyh4AaABAg",
+        "span": "פירורי לחם במקום קמח מצא",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "UgwbRO8SwdrJPUUkBDJ4AaABAg",
+        "span": "להחליף... בסוכר וניל",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "UgyhaFztez7eVxZ7lE94AaABAg",
+        "span": "שניצל ,גם טעים וגם בריא. במקום נקניק",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "top"
+      },
+      {
+        "thread_id": "UgwIH6yRaQA7esQUbKJ4AaABAg",
+        "span": "קמח במקום הקרונפלור",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "UgyZY6amzw_1sHgAnDN4AaABAg",
+        "span": "זרעי פשתן במקום זרעי צ'יה",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "UgyffbLZKjWCPo7i5EZ4AaABAg",
+        "span": "שיבולת שועל במקום הבסקויטים",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "top"
+      },
+      {
+        "thread_id": "UgyffbLZKjWCPo7i5EZ4AaABAg",
+        "span": "דבש במקום הסוכר הלבן",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "top"
+      },
+      {
+        "thread_id": "UgzkoHjk1NQ-ojkf9SJ4AaABAg",
+        "span": "גבינה בולגרית במקום פטה",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "UgyJ2UI3cdxCC59y03t4AaABAg",
+        "span": "חלב רגיל במקום הריוויון",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "UgxFrM4_fOSaPcrweV94AaABAg",
+        "span": "מים רותחים במקום ציר",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "top"
+      },
+      {
+        "thread_id": "UgxOIHFHQiUt7b8PXJZ4AaABAg",
+        "span": "שוקולד חלב במקום שוקולד מריר",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "UgxxKlOErrVx7Lc6eMd4AaABAg",
+        "span": "קמח רגיל במקוום קמח שיבולת שועל",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "top"
+      },
+      {
+        "thread_id": "UgyRapscK-ZFryCLVbJ4AaABAg",
+        "span": "קמח תפוחי אדמה במקום קורנפלור",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "top"
+      },
+      {
+        "thread_id": "Ugz3S-RbCHDXha-ZT6l4AaABAg",
+        "span": "לבשל בסיר על הגז במקום התנור",
+        "aspect": "TECHNIQUE",
+        "source_comment": "top"
+      },
+      {
+        "thread_id": "UgwrG6UsI7DSYT_azL14AaABAg",
+        "span": "צפתית במקום בולגרית",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "UgyZor8kBd-18UqDwgF4AaABAg",
+        "span": "ריבת חלב במקום ממרח לוטוס",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "UgwTo3yJfYshCosk-hh4AaABAg",
+        "span": "עוד קצת סולת במקום הקמח",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "top"
+      },
+      {
+        "thread_id": "UgyRpLC-fgaMcMmKEIF4AaABAg",
+        "span": "בלי כרוב",
+        "aspect": "TECHNIQUE",
+        "source_comment": "top"
+      },
+      {
+        "thread_id": "UgzpDyeBO9grKA1VHV54AaABAg",
+        "span": "כרוב במקום פטריות",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "top"
+      },
+      {
+        "thread_id": "UgzX2suevgLnZJ4nbOV4AaABAg",
+        "span": "סילאן במקום סוכר",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "UgwacTH4i_v7r3YHeJB4AaABAg",
+        "span": "קוסקוס מוכן במקום קינואה",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "reply_1"
+      },
+      {
+        "thread_id": "UgwoZaDqgQ4K8C61czB4AaABAg",
+        "span": "16 קוביות במקום 8",
+        "aspect": "QUANTITY",
+        "source_comment": "top"
+      },
+      {
+        "thread_id": "UgwoZaDqgQ4K8C61czB4AaABAg",
+        "span": "שתי כפות קקאו במקום 4",
+        "aspect": "QUANTITY",
+        "source_comment": "top"
+      },
+      {
+        "thread_id": "UgzPqWIEVgJg5oaDAnh4AaABAg",
+        "span": "שמן זית במקום שמן קנולה",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "top"
+      },
+      {
+        "thread_id": "UgxlPRHF07yRrxi8Jvx4AaABAg",
+        "span": "פטריות או ברוקולי במקום בטטה",
+        "aspect": "SUBSTITUTION",
+        "source_comment": "top"
+      }
+    ]
+  }
 }

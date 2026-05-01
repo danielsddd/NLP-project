@@ -37,12 +37,12 @@ nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv 2>/dev/null ||
 echo "=================================================="
 
 # --- Data Check ---
-if [ ! -f "data/processed/train_merged.jsonl" ]; then
-    echo "ERROR: data/processed/train_merged.jsonl not found!"
+if [ ! -f "data/processed_v2/train_merged.jsonl" ]; then
+    echo "ERROR: data/processed_v2/train_merged.jsonl not found!"
     echo "Run the corresponding preprocessing script first."
     exit 1
 fi
-echo "Data:"; wc -l data/processed/train_merged.jsonl data/processed/val.jsonl
+echo "Data:"; wc -l data/processed_v2/train_merged.jsonl data/processed_v2/val.jsonl
 echo ""
 
 # --- P2: CRF + class weights (MAIN CRF CONFIG — compare with dictabert/P2) ---
@@ -50,14 +50,14 @@ mkdir -p models/checkpoints/dictabert_crf/P2_crf_weighted
 
 python -m src.models.train_joint \
     --model "dicta-il/dictabert" \
-    --data-dir data/processed \
+    --data-dir data/processed_v2 \
     --train-file train_merged.jsonl \
     --output-dir models/checkpoints/dictabert_crf/P2_crf_weighted \
     --epochs 10 \
     --batch-size 16 \
     --lr 2e-5 \
     --seed 42 \
-    --class-weights-file data/processed/stats_merged.json
+    --class-weights-file data/processed_v2/stats_merged.json
 
 EXIT_CODE=$?
 if [ $EXIT_CODE -eq 0 ]; then

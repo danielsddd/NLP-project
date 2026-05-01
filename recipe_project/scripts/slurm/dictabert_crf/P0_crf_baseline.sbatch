@@ -6,7 +6,7 @@
 #SBATCH --job-name=dict_P0_crf_bas
 #SBATCH --partition=studentkillable
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="geforce_rtx_3090|a5000|a6000"
+#SBATCH --constraint="titan_xp|geforce_rtx_2080"
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
 #SBATCH --time=10:00:00
@@ -37,12 +37,12 @@ nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv 2>/dev/null ||
 echo "=================================================="
 
 # --- Data Check ---
-if [ ! -f "data/processed/train_merged.jsonl" ]; then
-    echo "ERROR: data/processed/train_merged.jsonl not found!"
+if [ ! -f "data/processed_v2/train_merged.jsonl" ]; then
+    echo "ERROR: data/processed_v2/train_merged.jsonl not found!"
     echo "Run the corresponding preprocessing script first."
     exit 1
 fi
-echo "Data:"; wc -l data/processed/train_merged.jsonl data/processed/val.jsonl
+echo "Data:"; wc -l data/processed_v2/train_merged.jsonl data/processed_v2/val.jsonl
 echo ""
 
 # --- P0: CRF, no class weights ---
@@ -50,7 +50,7 @@ mkdir -p models/checkpoints/dictabert_crf/P0_crf_baseline
 
 python -m src.models.train_joint \
     --model "dicta-il/dictabert" \
-    --data-dir data/processed \
+    --data-dir data/processed_v2 \
     --train-file train_merged.jsonl \
     --output-dir models/checkpoints/dictabert_crf/P0_crf_baseline \
     --epochs 10 \

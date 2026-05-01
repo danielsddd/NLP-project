@@ -50,7 +50,6 @@ from src.preprocessing.prepare_data import align_example
 # =============================================================================
 # FOCAL LOSS
 # =============================================================================
-
 class FocalLoss(nn.Module):
     """Focal Loss: down-weights easy examples, focuses on hard ones.
     FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
@@ -62,12 +61,27 @@ class FocalLoss(nn.Module):
         self.ignore_index = ignore_index
 
     def forward(self, logits, targets):
+        # 1. Filter out the ignore_index BEFORE calculating math
+        # logits is (N, C), targets is (N,) after view(-1) in Trainer
+        active_mask = targets != self.ignore_index
+        active_logits = logits[active_mask]
+        active_targets = targets[active_mask]
+        
+        # Edge case: If the entire batch is somehow padding, return a 0 loss with gradient attached
+        if active_targets.numel() == 0:
+            return logits.sum() * 0.0
+
+        # 2. Calculate Cross Entropy only on active tokens
         ce_loss = nn.functional.cross_entropy(
-            logits, targets, weight=self.weight,
-            ignore_index=self.ignore_index, reduction='none'
+            active_logits, active_targets, weight=self.weight,
+            reduction='none'
         )
+        
+        # 3. Calculate Focal Loss
         pt = torch.exp(-ce_loss)
         focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+        
+        # 4. Now .mean() correctly divides only by the number of active tokens
         return focal_loss.mean()
 
 # =============================================================================

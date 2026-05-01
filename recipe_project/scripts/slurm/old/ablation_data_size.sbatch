@@ -67,7 +67,6 @@ python -m src.models.train_student \
     --lr 2e-5 \
     --max-examples $DATA_SIZE \
     --seed 42 \
-    --fp16
 
 if [ $? -eq 0 ]; then
     echo "=========================================="

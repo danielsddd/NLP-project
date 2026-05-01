@@ -79,7 +79,6 @@ python -m src.models.train_student \
     --seed 42 \
     --neg-ratio 3.0 \
     --class-weights sqrt \
-    --fp16
 
 EXIT_CODE=$?
 if [ $EXIT_CODE -eq 0 ]; then

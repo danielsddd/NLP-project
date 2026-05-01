@@ -6,10 +6,10 @@
 #SBATCH --job-name=alep_eval
 #SBATCH --partition=studentkillable
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="geforce_rtx_3090|a5000|a6000"
+#SBATCH --constraint="titan_xp|geforce_rtx_2080"
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
-#SBATCH --time=08:00:00
+#SBATCH --time=14:00:00
 #SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/alephbert/%j_evaluate_all.out
 #SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/alephbert/%j_evaluate_all.err
 
@@ -59,7 +59,7 @@ fi
 echo "Gold file: $GOLD ($(wc -l < "$GOLD") records)"
 # === end Fix 5 ===
 # Default silver test file (BIO scheme)
-DEFAULT_TEST="data/processed/test.jsonl"
+DEFAULT_TEST="data/processed_v2/test.jsonl"
 
 for vdir in $CKPT_BASE/*/; do
     vname=$(basename "$vdir")

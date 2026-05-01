@@ -6,10 +6,10 @@
 #SBATCH --job-name=xlm__combo_thre
 #SBATCH --partition=studentkillable
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="geforce_rtx_3090|a5000|a6000"
+#SBATCH --constraint="titan_xp|geforce_rtx_2080"
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
-#SBATCH --time=08:00:00
+#SBATCH --time=14:00:00
 #SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlmr/%j_combo_thread_aware_ds2.out
 #SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/xlmr/%j_combo_thread_aware_ds2.err
 
@@ -56,7 +56,6 @@ python -m src.models.train_student \
     --batch-size 16 \
     --lr 2e-5 \
     --seed 42 \
-    --fp16 \
     --class-weights balanced \
     --focal-loss \
     --focal-gamma 2.0

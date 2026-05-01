@@ -4,7 +4,7 @@ Run these BEFORE the training scripts that need them.
 
 | # | Script | Output Dir | Description |
 |---|--------|-----------|-------------|
-| 01 | `01_preprocess_default.sbatch` | `data/processed/` | Default: ratio 3.0, BIO, merged |
+| 01 | `01_preprocess_default.sbatch` | `data/processed_v2/` | Default: ratio 3.0, BIO, merged |
 | 02 | `02_preprocess_ratio_2.sbatch` | `data/processed_ds2/` | A2: ratio 2:1 |
 | 03 | `03_preprocess_ratio_4.sbatch` | `data/processed_ds4/` | A2: ratio 4:1 |
 | 04 | `04_preprocess_no_enriched.sbatch` | `data/processed_no_enriched/` | A6: original only |

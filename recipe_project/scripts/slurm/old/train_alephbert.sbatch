@@ -12,7 +12,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
-#SBATCH --time=08:00:00
+#SBATCH --time=14:00:00
 #SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/%u/logs/%j_alephbert.out
 #SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/%u/logs/%j_alephbert.err
 
@@ -77,7 +77,6 @@ python -m src.models.train_student \
     --seed 42 \
     --neg-ratio 3.0 \
     --class-weights sqrt \
-    --fp16
 
 EXIT_CODE=$?
 if [ $EXIT_CODE -eq 0 ]; then

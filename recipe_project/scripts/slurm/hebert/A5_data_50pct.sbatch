@@ -6,10 +6,10 @@
 #SBATCH --job-name=hebe_A5_data_50
 #SBATCH --partition=studentkillable
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="geforce_rtx_3090|a5000|a6000"
+#SBATCH --constraint="titan_xp|geforce_rtx_2080"
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
-#SBATCH --time=08:00:00
+#SBATCH --time=14:00:00
 #SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/hebert/%j_A5_data_50pct.out
 #SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/hebert/%j_A5_data_50pct.err
 
@@ -37,30 +37,29 @@ nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv 2>/dev/null ||
 echo "=================================================="
 
 # --- Data Check ---
-if [ ! -f "data/processed/train_merged.jsonl" ]; then
-    echo "ERROR: data/processed/train_merged.jsonl not found!"
+if [ ! -f "data/processed_v2/train_merged.jsonl" ]; then
+    echo "ERROR: data/processed_v2/train_merged.jsonl not found!"
     echo "Run the corresponding preprocessing script first."
     exit 1
 fi
-echo "Data:"; wc -l data/processed/train_merged.jsonl data/processed/val.jsonl
+echo "Data:"; wc -l data/processed_v2/train_merged.jsonl data/processed_v2/val.jsonl
 echo ""
 
 # --- A5: 50% of training data (with weights+focal) ---
 mkdir -p models/checkpoints/hebert/A5_data_50pct
 
-TOTAL=$(wc -l < data/processed/train_merged.jsonl)
+TOTAL=$(wc -l < data/processed_v2/train_merged.jsonl)
 MAX_EXAMPLES=$((TOTAL * 50 / 100))
 echo "Using $MAX_EXAMPLES / $TOTAL training examples (50%)"
 
 python -m src.models.train_student \
     --model "avichr/heBERT" \
-    --data-dir data/processed \
+    --data-dir data/processed_v2 \
     --output-dir models/checkpoints/hebert/A5_data_50pct \
     --epochs 10 \
     --batch-size 16 \
     --lr 2e-5 \
     --seed 42 \
-    --fp16 \
     --class-weights balanced \
     --focal-loss \
     --focal-gamma 2.0 \

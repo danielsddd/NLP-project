@@ -51,8 +51,13 @@ from datetime import datetime
 # ─────────────────────────────────────────────────────────────────────────────
 VALID_ASPECTS = {"SUBSTITUTION", "QUANTITY", "TECHNIQUE", "ADDITION"}
 
-# Agreement levels used by compute_pairwise_agreement() in generate_labels.py
-VALID_AGREEMENT_LEVELS = {"full_agreement", "partial_agreement", "no_agreement"}
+# Agreement levels used by compute_pairwise_agreement() in generate_labels.py.
+# generate_labels.py writes the SHORT forms: "full", "partial", "none".
+# "skipped" appears in agreement_1v3 / agreement_2v3 for pass3_skipped records.
+VALID_AGREEMENT_LEVELS = {"full", "partial", "none", "skipped"}
+
+# Map: the key we look up in the counter to compute "full agreement %"
+_FULL_AGREEMENT_KEY = "full"
 
 # vote_method values set by compute_majority_vote() in generate_labels.py
 VALID_VOTE_METHODS = {"unanimous", "majority", "no_majority", "gemini_unanimous"}
@@ -642,19 +647,35 @@ def check_agreement(records: list, check_all: bool, result: AuditResult) -> dict
 
         _counter_table(counter, total)
 
-        # Check for unrecognized agreement levels
+        # Check for unrecognized agreement levels.
+        # "skipped" is expected in agreement_1v3 / agreement_2v3 for records
+        # where pass3_skipped=True (gemini_unanimous) — exclude from the
+        # full-agreement rate calculation so it doesn't dilute the percentage.
         bad = {k for k in counter if k not in VALID_AGREEMENT_LEVELS}
         if bad:
             result.warn("§E", f"{name}: unrecognized agreement levels: {bad}")
 
-        full = counter.get("full_agreement", 0)
-        full_pct = 100.0 * full / total
+        # For 1v3 / 2v3 pairs, "skipped" entries are not real disagreements —
+        # they are records where Pass 3 was deliberately not run because
+        # Pass 1 and Pass 2 already agreed.  Exclude them from the gate.
+        skipped_count = counter.get("skipped", 0)
+        comparable    = total - skipped_count   # records actually sent to Pass 3
+
+        full = counter.get(_FULL_AGREEMENT_KEY, 0)
+        if comparable == 0:
+            result.warn("§E", f"{name}: no comparable records (all skipped?)")
+            continue
+        full_pct = 100.0 * full / comparable
+        _info(f"(excluding {skipped_count:,} skipped records → "
+              f"{comparable:,} comparable)")
+        _info(f"full agreement among comparable: {full:,} / {comparable:,} "
+              f"= {full_pct:.1f}%")
         if full_pct < 40.0:
             result.warn("§E",
-                f"{name}: full_agreement = {full_pct:.1f}% < 40% — "
+                f"{name}: full agreement = {full_pct:.1f}% < 40% among comparable records — "
                 f"label quality may be low; consider reviewing prompt")
         else:
-            result.ok("§E", f"{name}: full_agreement = {full_pct:.1f}%")
+            result.ok("§E", f"{name}: full agreement = {full_pct:.1f}%  ✓")
 
     result.data["agreement"] = agr_stats
     return agr_stats
