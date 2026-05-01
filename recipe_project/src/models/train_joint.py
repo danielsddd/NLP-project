@@ -276,7 +276,7 @@ def train(args):
     # ── Model ─────────────────────────────────────────────────────────
     model = BertCRFModel(
         model_name=args.model,
-        num_labels=9,
+        num_labels=len(class_weights) if class_weights is not None else 9,
         dropout_rate=args.dropout,
         class_weights=class_weights,
     )

@@ -36,20 +36,24 @@ echo "Data:"; wc -l data/processed_v2/train_merged.jsonl data/processed_v2/val.j
 
 mkdir -p models/checkpoints/dictabert_crf/A1b_crf_uniform_weights
 
+# A1b = uniform weights = no --class-weights-file (all labels weight 1.0)
 python -m src.models.train_joint \
     --model "dicta-il/dictabert" \
     --data-dir data/processed_v2 \
+    --train-file train_merged.jsonl \
     --output-dir models/checkpoints/dictabert_crf/A1b_crf_uniform_weights \
     --epochs 10 \
     --batch-size 16 \
     --lr 2e-5 \
-    --seed 42 \
-    --fp16 \
-    --weight-type uniform
+    --seed 42
 
 EXIT_CODE=$?
 if [ $EXIT_CODE -eq 0 ]; then
     echo "SUCCESS — saved to: models/checkpoints/dictabert_crf/A1b_crf_uniform_weights"
+    for f in models/checkpoints/dictabert_crf/A1b_crf_uniform_weights/training_summary.json \
+              models/checkpoints/dictabert_crf/A1b_crf_uniform_weights/all_results.json; do
+        [ -f "$f" ] && echo "--- $f ---" && cat "$f" && echo ""
+    done
 else
     echo "FAILED (exit code: $EXIT_CODE)"; exit $EXIT_CODE
 fi
