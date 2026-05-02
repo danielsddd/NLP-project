@@ -486,15 +486,16 @@ def process_merged(
     print(f"  Saved: {out / 'val.jsonl'} ({len(val_processed)} examples)")
     print(f"  Saved: {out / 'test.jsonl'} ({len(test_processed)} examples)")
     print(f"  Saved: {out / 'stats_merged.json'} (class weights + stats)")
-    # Write label mapping files (required by train_student.py)
-    label2id_out = {k: v for k, v in BIO_LABEL2ID.items()}
-    id2label_out = {str(v): k for k, v in BIO_LABEL2ID.items()}
+# Write label mapping files (required by train_student.py)
+    # Use label2id (already resolved to BIO or IO based on --scheme)
+    label2id_out = {k: int(v) for k, v in label2id.items()}
+    id2label_out = {str(v): k for k, v in label2id.items()}
     with open(out / "label2id.json", "w", encoding="utf-8") as f:
-        json.dump(label2id_out, f, indent=2)
+        json.dump(label2id_out, f, indent=2, ensure_ascii=False)
     with open(out / "id2label.json", "w", encoding="utf-8") as f:
-        json.dump(id2label_out, f, indent=2)
-    print(f"  Saved: {out / 'label2id.json'} (BIO label mapping)")
-    print(f"  Saved: {out / 'id2label.json'} (BIO label mapping)")
+        json.dump(id2label_out, f, indent=2, ensure_ascii=False)
+    print(f"  Saved: {out / 'label2id.json'} ({scheme} label mapping, {len(label2id)} labels)")
+    print(f"  Saved: {out / 'id2label.json'} ({scheme} label mapping)")
 
     # ─── Eye test ────────────────────────────────────────────────────────
     print(f"\n--- EYE TEST (5 random positive training examples) ---")

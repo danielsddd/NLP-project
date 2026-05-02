@@ -1,43 +1,102 @@
 #!/usr/bin/env python3
-"""
-evaluate_crf.py — Evaluate a saved BertCRFModel checkpoint on gold or silver test set.
-"""
+"""Evaluate a saved BertCRFModel checkpoint on gold or silver test set."""
 
-import argparse
-import json
+import argparse, json
 from pathlib import Path
-
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
-from seqeval.metrics import f1_score, precision_score, recall_score, classification_report
+from seqeval.metrics import (
+    f1_score, precision_score, recall_score,
+    classification_report, classification_report as seqeval_report,
+)
 
 from src.models.joint_model import BertCRFModel
+from src.preprocessing.prepare_data import BIO_LABEL2ID, IO_LABEL2ID
 
-BIO_ID2LABEL = {
-    0: "O",
-    1: "B-SUBSTITUTION", 2: "I-SUBSTITUTION",
-    3: "B-QUANTITY",      4: "I-QUANTITY",
-    5: "B-TECHNIQUE",     6: "I-TECHNIQUE",
-    7: "B-ADDITION",      8: "I-ADDITION",
-}
 
-IO_ID2LABEL = {
-    0: "O",
-    1: "I-SUBSTITUTION",
-    2: "I-QUANTITY",
-    3: "I-TECHNIQUE",
-    4: "I-ADDITION",
-}
+# ── Span helpers ─────────────────────────────────────────────────────────────
 
+def get_spans_from_bio(seq):
+    """Extract (label, start, end) tuples from a BIO tag sequence."""
+    spans = []
+    current_label, start_idx = None, -1
+    for i, tag in enumerate(seq):
+        if tag.startswith("B-"):
+            if current_label is not None:
+                spans.append((current_label, start_idx, i - 1))
+            current_label, start_idx = tag[2:], i
+        elif tag.startswith("I-") and current_label == tag[2:]:
+            continue
+        else:
+            if current_label is not None:
+                spans.append((current_label, start_idx, i - 1))
+                current_label = None
+    if current_label is not None:
+        spans.append((current_label, start_idx, len(seq) - 1))
+    return spans
+
+
+def compute_relaxed_metrics(true_seqs, pred_seqs):
+    """
+    Relaxed (partial-boundary) Precision, Recall, F1.
+    A predicted span counts as TP if it overlaps by >= 1 token
+    with a gold span of the SAME aspect type.
+    Mathematically guaranteed: Relaxed F1 >= Exact F1.
+    """
+    total_true = total_pred = matched_true = matched_pred = 0
+
+    for true_seq, pred_seq in zip(true_seqs, pred_seqs):
+        true_spans = get_spans_from_bio(true_seq)
+        pred_spans = get_spans_from_bio(pred_seq)
+        total_true += len(true_spans)
+        total_pred += len(pred_spans)
+
+        for t_label, t_start, t_end in true_spans:
+            t_range = set(range(t_start, t_end + 1))
+            if any(
+                p_label == t_label and t_range & set(range(p_start, p_end + 1))
+                for p_label, p_start, p_end in pred_spans
+            ):
+                matched_true += 1
+
+        for p_label, p_start, p_end in pred_spans:
+            p_range = set(range(p_start, p_end + 1))
+            if any(
+                t_label == p_label and p_range & set(range(t_start, t_end + 1))
+                for t_label, t_start, t_end in true_spans
+            ):
+                matched_pred += 1
+
+    p  = matched_pred / total_pred if total_pred > 0 else 0.0
+    r  = matched_true / total_true if total_true > 0 else 0.0
+    f1 = 2 * p * r / (p + r)      if (p + r)    > 0 else 0.0
+    return {
+        "relaxed_precision": round(p,  4),
+        "relaxed_recall":    round(r,  4),
+        "relaxed_f1":        round(f1, 4),
+    }
+
+
+def compute_token_level_f1(true_seqs, pred_seqs):
+    """True token-level macro F1 — flattens to individual tokens, ignores O."""
+    from sklearn.metrics import f1_score, precision_score, recall_score
+    y_true = [t for seq in true_seqs for t in seq]
+    y_pred = [t for seq in pred_seqs for t in seq]
+    labels = sorted(set(y_true + y_pred) - {"O"})
+    p  = precision_score(y_true, y_pred, labels=labels, average="macro", zero_division=0)
+    r  = recall_score(   y_true, y_pred, labels=labels, average="macro", zero_division=0)
+    f1 = f1_score(       y_true, y_pred, labels=labels, average="macro", zero_division=0)
+    return {
+        "token_precision": round(p,  4),
+        "token_recall":    round(r,  4),
+        "token_f1":        round(f1, 4),
+    }
+
+
+# ── IO → BIO converter ───────────────────────────────────────────────────────
 
 def convert_io_to_bio(tags):
-    """Convert IO tag sequence to BIO so seqeval counts entities correctly.
-
-    Rule: The first I-X token after an O or a different I-Y becomes B-X.
-    Consecutive same-type I-X tokens after the first become I-X.
-    This ensures seqeval sees proper entity boundaries.
-    """
     bio_tags = []
     prev_type = None
     for tag in tags:
@@ -45,28 +104,21 @@ def convert_io_to_bio(tags):
             bio_tags.append("O")
             prev_type = None
         elif tag.startswith("I-"):
-            entity_type = tag[2:]  # e.g., "SUBSTITUTION"
-            if prev_type == entity_type:
-                bio_tags.append(f"I-{entity_type}")
-            else:
-                bio_tags.append(f"B-{entity_type}")
-            prev_type = entity_type
+            etype = tag[2:]
+            bio_tags.append(f"B-{etype}" if prev_type != etype else f"I-{etype}")
+            prev_type = etype
         else:
-            # Already BIO format, pass through
             bio_tags.append(tag)
-            if tag.startswith("B-"):
-                prev_type = tag[2:]
-            elif tag.startswith("I-"):
-                prev_type = tag[2:]
-            else:
-                prev_type = None
+            prev_type = tag[2:] if tag.startswith(("B-", "I-")) else None
     return bio_tags
 
+
+# ── Dataset ──────────────────────────────────────────────────────────────────
 
 class EvalDataset(Dataset):
     def __init__(self, path):
         self.examples = []
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -96,37 +148,41 @@ def collate_fn(batch):
     }
 
 
+# ── Main evaluation logic ────────────────────────────────────────────────────
+
 def evaluate_crf(ckpt_dir, test_file, output_dir, model_name, batch_size=32):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
     ckpt_path = Path(ckpt_dir) / "best_model.pt"
     if not ckpt_path.exists():
-        raise FileNotFoundError(f"No checkpoint found at {ckpt_path}")
-
+        raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     print(f"Loaded checkpoint from {ckpt_path}")
 
-    # Auto-detect num_labels from checkpoint
-    # The classifier/emission layer shape tells us the label count
-    state_dict = ckpt["model_state_dict"]
+    # Detect number of labels from checkpoint tensors
+    state_dict    = ckpt["model_state_dict"]
     detected_labels = None
     for key in state_dict:
-        if "classifier" in key or "emission" in key or "hidden2tag" in key:
+        if any(pat in key for pat in ("classifier", "emission", "hidden2tag")):
             shape = state_dict[key].shape
             if len(shape) >= 1:
                 detected_labels = shape[0]
                 break
     if detected_labels is None:
-        # Fallback: check CRF transitions matrix (num_labels x num_labels)
         for key in state_dict:
             if "crf" in key and "transitions" in key:
                 detected_labels = state_dict[key].shape[0]
                 break
     num_labels = detected_labels if detected_labels else 9
-    is_io_scheme = (num_labels == 5)
-    id2label = IO_ID2LABEL if is_io_scheme else BIO_ID2LABEL
-    print(f"Detected {num_labels} labels -> {'IO' if is_io_scheme else 'BIO'} scheme")
+    print(f"Detected {num_labels} labels in checkpoint tensors.")
+
+    ckpt_name    = str(ckpt_dir).lower()
+    is_io_scheme = ("io" in ckpt_name or num_labels == 5)
+
+    model_label2id = IO_LABEL2ID if is_io_scheme else BIO_LABEL2ID
+    id2label       = {v: k for k, v in model_label2id.items()}
+    print(f"Using {'IO' if is_io_scheme else 'BIO'} mapping for predictions.")
 
     model = BertCRFModel(model_name=model_name, num_labels=num_labels, dropout_rate=0.1)
     model.load_state_dict(ckpt["model_state_dict"], strict=False)
@@ -135,45 +191,64 @@ def evaluate_crf(ckpt_dir, test_file, output_dir, model_name, batch_size=32):
     print(f"Model loaded: {model_name} + CRF")
 
     dataset = EvalDataset(test_file)
-    loader  = DataLoader(dataset, batch_size=batch_size,
-                         shuffle=False, collate_fn=collate_fn)
+    loader  = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
     print(f"Test examples: {len(dataset)}")
 
-    all_preds  = []
-    all_labels = []
+    # Detect gold scheme
+    max_gold_label = 0
+    for ex in dataset.examples:
+        for lbl in ex["labels"]:
+            if lbl != -100 and lbl > max_gold_label:
+                max_gold_label = lbl
+    gold_is_io    = (max_gold_label <= 4)
+    gold_label2id = IO_LABEL2ID if gold_is_io else BIO_LABEL2ID
+    gold_id2label = {v: k for k, v in gold_label2id.items()}
+    if gold_is_io != is_io_scheme:
+        print(f"  NOTE: Model={'IO' if is_io_scheme else 'BIO'}  Gold={'IO' if gold_is_io else 'BIO'}")
+    print(f"  Gold scheme: {'IO' if gold_is_io else 'BIO'} (max label ID={max_gold_label})")
 
+    # Inference
+    all_preds, all_labels = [], []
     with torch.no_grad():
         for batch in loader:
             input_ids      = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             labels         = batch["labels"]
-
             pred_sequences = model(input_ids, attention_mask)
 
             for i, pred_seq in enumerate(pred_sequences):
                 gold_seq   = labels[i].tolist()
-                pred_tags  = []
-                gold_tags  = []
-                for j, (p, g) in enumerate(zip(pred_seq, gold_seq)):
+                pred_tags, gold_tags = [], []
+                for p, g in zip(pred_seq, gold_seq):
                     if g == -100:
                         continue
                     pred_tags.append(id2label.get(p, "O"))
-                    gold_tags.append(id2label.get(g, "O"))
-                # Convert IO→BIO for correct seqeval span-level evaluation
+                    gold_tags.append(gold_id2label.get(g, "O"))
                 if is_io_scheme:
                     pred_tags = convert_io_to_bio(pred_tags)
+                if gold_is_io:
                     gold_tags = convert_io_to_bio(gold_tags)
                 all_preds.append(pred_tags)
                 all_labels.append(gold_tags)
 
+    # ── Exact entity metrics ─────────────────────────────────────────────────
     entity_f1 = f1_score(all_labels, all_preds)
     entity_p  = precision_score(all_labels, all_preds)
     entity_r  = recall_score(all_labels, all_preds)
     report    = classification_report(all_labels, all_preds)
 
-    # Bootstrap 95% CI
-    rng      = np.random.default_rng(42)
-    indices  = list(range(len(all_labels)))
+    # ── Relaxed + token metrics ──────────────────────────────────────────────
+    relaxed = compute_relaxed_metrics(all_labels, all_preds)
+    token   = compute_token_level_f1(all_labels, all_preds)
+
+    # Sanity check — relaxed must always be >= exact
+    assert relaxed["relaxed_f1"] >= round(entity_f1, 4) - 1e-4, (
+        f"BUG: relaxed_f1={relaxed['relaxed_f1']} < exact_f1={entity_f1:.4f}"
+    )
+
+    # ── Bootstrap CI (exact F1) ──────────────────────────────────────────────
+    rng     = np.random.default_rng(42)
+    indices = list(range(len(all_labels)))
     boot_f1s = []
     for _ in range(1000):
         sample   = rng.choice(indices, size=len(indices), replace=True)
@@ -183,36 +258,52 @@ def evaluate_crf(ckpt_dir, test_file, output_dir, model_name, batch_size=32):
             boot_f1s.append(f1_score(s_labels, s_preds))
         except Exception:
             boot_f1s.append(0.0)
-
     ci_low  = float(np.percentile(boot_f1s, 2.5))
     ci_high = float(np.percentile(boot_f1s, 97.5))
 
+    # ── Save results ─────────────────────────────────────────────────────────
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     results = {
-        "entity_f1":              round(entity_f1, 4),
-        "entity_precision":       round(entity_p,  4),
-        "entity_recall":          round(entity_r,  4),
-        "ci_95_low":              round(ci_low,    4),
-        "ci_95_high":             round(ci_high,   4),
-        "n_examples":             len(dataset),
-        "model_path":             str(ckpt_dir),
-        "test_file":              str(test_file),
-        "classification_report":  report,
+        # exact
+        "entity_f1":            round(entity_f1, 4),
+        "entity_precision":     round(entity_p,  4),
+        "entity_recall":        round(entity_r,  4),
+        "ci_95_low":            round(ci_low,    4),
+        "ci_95_high":           round(ci_high,   4),
+        # relaxed
+        "relaxed_f1":           relaxed["relaxed_f1"],
+        "relaxed_precision":    relaxed["relaxed_precision"],
+        "relaxed_recall":       relaxed["relaxed_recall"],
+        # token-level
+        "token_f1":             token["token_f1"],
+        "token_precision":      token["token_precision"],
+        "token_recall":         token["token_recall"],
+        # meta
+        "n_examples":           len(dataset),
+        "model_path":           str(ckpt_dir),
+        "test_file":            str(test_file),
+        "classification_report": report,
+        "gold_scheme":          "IO" if gold_is_io  else "BIO",
+        "model_scheme":         "IO" if is_io_scheme else "BIO",
     }
 
     out_file = Path(output_dir) / "evaluation_results.json"
     with open(out_file, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
 
+    # ── Print ─────────────────────────────────────────────────────────────────
     print(f"\n{'='*60}")
     print(f"  RESULTS: {Path(ckpt_dir).name}")
     print(f"{'='*60}")
-    print(f"  Entity F1:        {entity_f1:.4f}")
-    print(f"  Entity Precision: {entity_p:.4f}")
-    print(f"  Entity Recall:    {entity_r:.4f}")
-    print(f"  95% CI:           [{ci_low:.4f}, {ci_high:.4f}]")
+    print(f"  Exact   F1:  {entity_f1:.4f}   "
+          f"(P={entity_p:.4f}  R={entity_r:.4f})")
+    print(f"  95% CI:      [{ci_low:.4f}, {ci_high:.4f}]")
+    print(f"  Relaxed F1:  {relaxed['relaxed_f1']:.4f}   "
+          f"(P={relaxed['relaxed_precision']:.4f}  R={relaxed['relaxed_recall']:.4f})")
+    print(f"  Token   F1:  {token['token_f1']:.4f}   "
+          f"(P={token['token_precision']:.4f}  R={token['token_recall']:.4f})")
     print(f"\n{report}")
-    print(f"  Saved to: {out_file}")
+    print(f"  Saved → {out_file}")
     print(f"{'='*60}")
 
 
@@ -224,7 +315,6 @@ def main():
     parser.add_argument("--model-name", default="dicta-il/dictabert")
     parser.add_argument("--batch-size", type=int, default=32)
     args = parser.parse_args()
-
     evaluate_crf(
         ckpt_dir   = args.ckpt_dir,
         test_file  = args.test_file,
@@ -232,7 +322,6 @@ def main():
         model_name = args.model_name,
         batch_size = args.batch_size,
     )
-
 
 if __name__ == "__main__":
     main()

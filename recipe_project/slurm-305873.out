@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/var/spool/slurmd/job305873/slurm_script", line 11, in <module>
+    from src.models.joint_model import BertCRFModel
+ModuleNotFoundError: No module named 'src'

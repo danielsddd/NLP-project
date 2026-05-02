@@ -27,6 +27,7 @@ from collections import defaultdict
 from typing import List, Dict, Optional
 
 from src.preprocessing.prepare_data import (
+    extract_thread_examples,
     find_span_in_text,
     normalize_hebrew,
     visualize_alignment,
@@ -73,95 +74,68 @@ def align_thread_aware_example(
     matches in the question), then shift the character offsets by
     prefix_len to get positions in full_text. Token alignment then
     proceeds normally on full_text.
-
-    Args:
-        full_text: "[שאלה] <question> [תשובה] <reply>"
-        reply_text: The reply portion only
-        prefix_len: len("[שאלה] <question> [תשובה] ") — chars before reply
-        modifications: List of {span, aspect, confidence}
-        tokenizer: HuggingFace tokenizer
-        label2id: BIO or IO label map
-        max_length: Max token sequence length
-
-    Returns:
-        dict with input_ids, attention_mask, labels, text — or None
     """
-    if not full_text or not full_text.strip():
-        return None
+    use_bio = "B-SUBSTITUTION" in label2id
 
-    # Tokenize the FULL text (model sees question + reply)
     encoding = tokenizer(
         full_text,
-        truncation=True,
         max_length=max_length,
+        truncation=True,
         padding="max_length",
         return_offsets_mapping=True,
-        return_tensors=None,
     )
 
-    offsets = encoding["offset_mapping"]
     input_ids = encoding["input_ids"]
     attention_mask = encoding["attention_mask"]
+    offset_mapping = encoding["offset_mapping"]
 
-    use_bio = any(k.startswith("B-") for k in label2id)
-
-    # Initialize labels
+    # None = special token (→ -100), "O" = non-entity
     labels_str = []
-    for offset in offsets:
-        if offset[0] == 0 and offset[1] == 0:
-            labels_str.append(None)  # special token → -100
+    for start, end in offset_mapping:
+        if start == 0 and end == 0:
+            labels_str.append(None)
         else:
             labels_str.append("O")
-
-    max_char = max((o[1] for o in offsets), default=0)
 
     aligned = 0
     hallucinated = 0
     truncated = 0
 
     for mod in modifications:
-        span = mod.get("span", "")
         aspect = mod.get("aspect", "")
+        if aspect not in VALID_ASPECTS:
+            continue
 
-        if not span or aspect not in VALID_ASPECTS:
+        span_text = mod.get("span", "")
+        if not span_text or not span_text.strip():
+            continue
+
+        # Search in reply_text ONLY (avoids false matches in the prefix question)
+        pos = find_span_in_text(span_text, reply_text)
+        if pos is None:
             hallucinated += 1
             continue
 
-        # CRITICAL: Search for span in REPLY TEXT ONLY
-        result = find_span_in_text(span, reply_text)
-        if result is None:
-            hallucinated += 1
-            continue
+        span_start_in_reply, span_end_in_reply = pos
+        start_char = span_start_in_reply + prefix_len
+        end_char = span_end_in_reply + prefix_len
 
-        reply_start, reply_end = result
-
-        # Shift to full_text coordinates
-        start_char = reply_start + prefix_len
-        end_char = reply_end + prefix_len
-
-        # Verify the span actually matches at this position in full_text
-        actual = full_text[start_char:end_char]
-        expected = reply_text[reply_start:reply_end]
-        if actual != expected:
-            # Offset mismatch — prefix_len calculation was wrong, skip
-            hallucinated += 1
-            continue
-
-        if start_char >= max_char:
+        max_char_in_encoding = max(
+            (end for start, end in offset_mapping if end > 0), default=0
+        )
+        if start_char >= max_char_in_encoding:
             truncated += 1
             continue
 
-        # Map to tokens
         first_token = True
-        for tok_idx, offset in enumerate(offsets):
-            tok_start, tok_end = offset[0], offset[1]
+        for tok_idx, (tok_start, tok_end) in enumerate(offset_mapping):
             if tok_start == 0 and tok_end == 0:
                 continue
             if tok_start < end_char and tok_end > start_char:
                 if labels_str[tok_idx] is None:
                     continue
                 if labels_str[tok_idx] != "O":
-                    continue  # already tagged by earlier span
+                    continue
                 if use_bio:
                     labels_str[tok_idx] = f"B-{aspect}" if first_token else f"I-{aspect}"
                 else:
@@ -173,7 +147,6 @@ def align_thread_aware_example(
         else:
             hallucinated += 1
 
-    # Convert labels to IDs
     label_ids = []
     for label in labels_str:
         if label is None:
@@ -196,7 +169,6 @@ def align_plain_example(text, modifications, tokenizer, label2id, max_length=128
     result = _align(text, modifications, tokenizer, label2id, max_length)
     if result is None:
         return None
-    # align_example returns (result_dict, stats_dict) tuple
     if isinstance(result, tuple):
         return result[0]
     return result
@@ -206,96 +178,86 @@ def align_plain_example(text, modifications, tokenizer, label2id, max_length=128
 # THREAD-AWARE EXAMPLE EXTRACTION
 # =============================================================================
 
-def extract_thread_aware_examples(record: Dict) -> List[Dict]:
-    """Extract examples, prepending question context for reply-sourced mods.
-
-    Returns list of dicts. Reply-sourced examples have extra fields:
-        reply_text: the raw reply text (for safe span alignment)
-        prefix_len: character count before the reply in full_text
-        is_thread_aware: True
+def _get_top_text(record: Dict) -> str:
     """
-    thread_id = record["thread_id"]
-    final_label = record.get("final_label") or record.get("teacher_output") or {}
-    has_mod = final_label.get("has_modification", False)
-    vote_method = record.get("vote_method", "unknown")
-    top_text = record.get("top_comment_text", "")
+    Try every plausible field name to find the parent/question text for
+    thread-aware prefixing. Returns empty string if nothing is found —
+    callers must handle that gracefully (no prefix applied).
+    """
+    # Strategy 0: check top_comment_text (the actual key used in your JSONL)
+    if record.get("top_comment_text") and isinstance(record.get("top_comment_text"), str):
+        t = record["top_comment_text"].strip()
+        if t: return t
 
-    examples = []
+    # Strategy 1: explicit top_comment field (dict or string)
+    tc = record.get("top_comment")
+    if isinstance(tc, dict):
+        t = tc.get("text", "").strip()
+        if t:
+            return t
+    elif isinstance(tc, str) and tc.strip():
+        return tc.strip()
 
-    if not has_mod:
-        if top_text and top_text.strip():
-            examples.append({
-                "text": top_text,
-                "modifications": [],
-                "thread_id": thread_id,
-                "source_comment": "top",
-                "has_modification": False,
-                "vote_method": vote_method,
-                "is_thread_aware": False,
-            })
-        return examples
+    # Strategy 2: comments list — find the one flagged as top
+    for c in record.get("comments", []):
+        if isinstance(c, dict) and c.get("is_top_comment", False):
+            t = c.get("text", "").strip()
+            if t:
+                return t
 
-    mods_by_source = defaultdict(list)
-    for mod in final_label.get("modifications", []):
-        src = mod.get("source_comment", "top")
-        if mod.get("aspect") not in VALID_ASPECTS:
-            continue
-        mods_by_source[src].append({
-            "span": mod.get("span", ""),
-            "aspect": mod["aspect"],
-            "confidence": mod.get("confidence", 0.0),
+    # Strategy 3: first entry in comments list as last resort
+    comments = record.get("comments", [])
+    if comments and isinstance(comments[0], dict):
+        t = comments[0].get("text", "").strip()
+        if t:
+            return t
+
+    return ""
+
+
+def extract_thread_aware_examples(record: Dict) -> List[Dict]:
+    """
+    Delegate data extraction to extract_thread_examples (already correct
+    for the actual JSONL format), then enrich each example with the
+    thread-aware prefix if a parent/question text is found in the record.
+
+    This avoids re-implementing the data-format-specific extraction logic
+    and guarantees we get the same example count as the non-thread-aware
+    preprocessing.
+    """
+    # Use the existing, tested extraction — handles all JSONL quirks
+    base_examples = extract_thread_examples(record)
+    if not base_examples:
+        return []
+
+    top_text = _get_top_text(record)
+
+    result = []
+    for ex in base_examples:
+        reply_text = ex.get("text", "")
+
+        # Add prefix only when: we have a question AND the reply isn't the
+        # top comment itself (guard against prefixing a comment with itself)
+        if top_text and reply_text.strip() != top_text.strip():
+            prefix = f"{QUESTION_PREFIX}{top_text}{ANSWER_PREFIX}"
+            full_text = f"{prefix}{reply_text}"
+            prefix_len = len(prefix)
+            is_thread_aware = True
+        else:
+            full_text = reply_text
+            prefix_len = 0
+            is_thread_aware = False
+
+        result.append({
+            **ex,                          # thread_id, source_comment, modifications,
+                                           # has_modification, vote_method — all from base
+            "text": full_text,             # overwrite with prefixed version
+            "reply_text": reply_text,      # original reply text for span search
+            "prefix_len": prefix_len,      # char offset to shift spans
+            "is_thread_aware": is_thread_aware,
         })
 
-    for src, mods in mods_by_source.items():
-        if src == "top":
-            text = top_text
-            if not text or not text.strip():
-                continue
-            examples.append({
-                "text": text,
-                "modifications": mods,
-                "thread_id": thread_id,
-                "source_comment": src,
-                "has_modification": True,
-                "vote_method": vote_method,
-                "is_thread_aware": False,
-            })
-
-        elif src.startswith("reply_"):
-            try:
-                idx = int(src.split("_")[1]) - 1
-                replies = record.get("replies_texts", [])
-                if 0 <= idx < len(replies):
-                    reply_text = replies[idx]
-                else:
-                    continue
-            except (ValueError, IndexError):
-                continue
-
-            if not reply_text or not reply_text.strip():
-                continue
-
-            if top_text and top_text.strip():
-                prefix = f"{QUESTION_PREFIX}{top_text}{ANSWER_PREFIX}"
-                full_text = f"{prefix}{reply_text}"
-                prefix_len = len(prefix)
-            else:
-                full_text = reply_text
-                prefix_len = 0
-
-            examples.append({
-                "text": full_text,
-                "reply_text": reply_text,
-                "prefix_len": prefix_len,
-                "modifications": mods,
-                "thread_id": thread_id,
-                "source_comment": src,
-                "has_modification": True,
-                "vote_method": vote_method,
-                "is_thread_aware": prefix_len > 0,
-            })
-
-    return examples
+    return result
 
 
 # =============================================================================
@@ -347,7 +309,9 @@ def process_thread_aware(
 
     orig_pos = sum(1 for e in original_examples if e["has_modification"])
     enr_pos = sum(1 for e in enriched_examples if e["has_modification"])
-    thread_aware_count = sum(1 for e in original_examples + enriched_examples if e.get("is_thread_aware"))
+    thread_aware_count = sum(
+        1 for e in original_examples + enriched_examples if e.get("is_thread_aware")
+    )
     print(f"  Original: {len(original_examples)} ({orig_pos} pos)")
     print(f"  Enriched: {len(enriched_examples)} ({enr_pos} pos)")
     print(f"  Thread-aware examples: {thread_aware_count}")
@@ -371,7 +335,6 @@ def process_thread_aware(
         skip = 0
         for ex in examples:
             if ex.get("is_thread_aware") and "reply_text" in ex:
-                # Thread-aware: align spans against reply portion only
                 result = align_thread_aware_example(
                     full_text=ex["text"],
                     reply_text=ex["reply_text"],
@@ -382,7 +345,6 @@ def process_thread_aware(
                     max_length=max_length,
                 )
             else:
-                # Standard alignment
                 result = align_plain_example(
                     ex["text"], ex["modifications"], tokenizer, label2id, max_length
                 )
@@ -391,7 +353,6 @@ def process_thread_aware(
                 skip += 1
                 continue
 
-            # Collect stats
             stats = result.pop("_align_stats", {})
             for k in total_stats:
                 total_stats[k] += stats.get(k, 0)
@@ -402,7 +363,6 @@ def process_thread_aware(
             result["vote_method"] = ex.get("vote_method", "unknown")
             result["is_thread_aware"] = ex.get("is_thread_aware", False)
 
-            # Remove helper fields from output
             result.pop("reply_text", None)
             result.pop("prefix_len", None)
 
@@ -416,7 +376,7 @@ def process_thread_aware(
 
     print(f"\n  Alignment stats: {total_stats}")
 
-    # Save
+    # ── Save JSONL files ──────────────────────────────────────────────────────
     def save_jsonl(data, path):
         with open(path, 'w', encoding='utf-8') as f:
             for item in data:
@@ -432,7 +392,7 @@ def process_thread_aware(
     save_jsonl(val_processed, out / "val.jsonl")
     save_jsonl(test_processed, out / "test.jsonl")
 
-    # Class weights
+    # ── Class weights + stats ─────────────────────────────────────────────────
     weights = compute_class_weights(train_processed, label2id)
     count_pos = lambda exs: sum(1 for e in exs if e["has_modification"])
     stats = {
@@ -455,10 +415,21 @@ def process_thread_aware(
     with open(out / "stats_merged.json", 'w', encoding='utf-8') as f:
         json.dump(stats, f, indent=2, ensure_ascii=False)
 
+    # ── FIX: label mapping files required by train_student.py ────────────────
+    label2id_out = {k: int(v) for k, v in label2id.items()}
+    id2label_out = {str(v): k for k, v in label2id.items()}
+    with open(out / "label2id.json", "w", encoding="utf-8") as f:
+        json.dump(label2id_out, f, indent=2, ensure_ascii=False)
+    with open(out / "id2label.json", "w", encoding="utf-8") as f:
+        json.dump(id2label_out, f, indent=2, ensure_ascii=False)
+
     print(f"\nSaved to {out}/")
-    print(f"  Train: {len(train_processed)} ({count_pos(train_processed)} pos)")
-    print(f"  Val:   {len(val_processed)} ({count_pos(val_processed)} pos)")
-    print(f"  Test:  {len(test_processed)} ({count_pos(test_processed)} pos)")
+    print(f"  train_merged.jsonl : {len(train_processed)} ({count_pos(train_processed)} pos)")
+    print(f"  val.jsonl          : {len(val_processed)} ({count_pos(val_processed)} pos)")
+    print(f"  test.jsonl         : {len(test_processed)} ({count_pos(test_processed)} pos)")
+    print(f"  stats_merged.json  : class weights + counts")
+    print(f"  label2id.json      : {scheme} mapping ({len(label2id)} labels)")
+    print(f"  id2label.json      : {scheme} mapping ({len(id2label)} labels)")
 
 
 # =============================================================================

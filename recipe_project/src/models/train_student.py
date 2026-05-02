@@ -183,9 +183,10 @@ class TokenClassificationDataset(Dataset):
     def __getitem__(self, idx):
         ex = self.examples[idx]
         return {
-            "input_ids": torch.tensor(ex["input_ids"], dtype=torch.long),
-            "attention_mask": torch.tensor(ex["attention_mask"], dtype=torch.long),
-            "labels": torch.tensor(ex["labels"], dtype=torch.long),
+            "input_ids":        torch.tensor(ex["input_ids"],      dtype=torch.long),
+            "attention_mask":   torch.tensor(ex["attention_mask"], dtype=torch.long),
+            "token_type_ids":   torch.zeros(len(ex["input_ids"]),  dtype=torch.long),
+            "labels":           torch.tensor(ex["labels"],         dtype=torch.long),
         }
 
 # =============================================================================
@@ -257,6 +258,7 @@ class WeightedTrainer(Trainer):
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         labels = inputs.pop("labels")
+        inputs.pop("token_type_ids", None)  # HeBERT/mBERT: collator regenerates bad token_type_ids
         outputs = model(**inputs)
         logits = outputs.logits
 

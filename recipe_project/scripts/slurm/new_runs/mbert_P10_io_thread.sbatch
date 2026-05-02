@@ -6,8 +6,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
 #SBATCH --time=10:00:00
-#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/dictabert_crf/%j_mbert_P10_io_thread.out
-#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/dictabert_crf/%j_mbert_P10_io_thread.err
+#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/mbert/%j_mbert_P10_io_thread.out
+#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/mbert/%j_mbert_P10_io_thread.err
 
 USER_DIR="/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2"
 PROJECT_DIR="$USER_DIR/recipe_modification_extraction/recipe_project"

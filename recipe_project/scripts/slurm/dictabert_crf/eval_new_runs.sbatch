@@ -1,6 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=eval_new_runs
 #SBATCH --partition=studentkillable
+#SBATCH --account=gpu-students
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="titan_xp|geforce_rtx_2080"
 #SBATCH --cpus-per-task=4
@@ -23,13 +24,15 @@ echo "EVAL ALL NEW RUNS"
 echo "Job ID: $SLURM_JOB_ID  Node: $(hostname)  Start: $(date)"
 echo "=================================================="
 
-# ---- Gold files ----
-GOLD_BIO="data/gold_validation/gold_tokenized_dictabert.jsonl"
-GOLD_IO="data/gold_validation/gold_tokenized_dictabert_io.jsonl"
+# ---------- Gold files ----------
+GOLD_BIO_THREAD="data/gold_validation/gold_tokenized_dictabert_bio_thread.jsonl"
+GOLD_IO_THREAD="data/gold_validation/gold_tokenized_dictabert_io_thread.jsonl"
+GOLD_IO_PLAIN="data/gold_validation/gold_tokenized_dictabert_io.jsonl"
 GOLD_LARGE_BIO="data/gold_validation/gold_tokenized_dictabert_large.jsonl"
 GOLD_LARGE_IO="data/gold_validation/gold_tokenized_dictabert_large_io.jsonl"
+GOLD_LARGE_BIO_THREAD="data/gold_validation/gold_tokenized_dictabert_large_bio_thread.jsonl"
+GOLD_LARGE_IO_THREAD="data/gold_validation/gold_tokenized_dictabert_large_io_thread.jsonl"
 
-# Generate any missing gold files
 if [ ! -s "$GOLD_LARGE_BIO" ]; then
     echo "Generating gold for dictabert-large (BIO)..."
     python scripts/local/prepare_gold_for_eval.py \
@@ -43,7 +46,7 @@ if [ ! -s "$GOLD_LARGE_IO" ]; then
         --output "$GOLD_LARGE_IO"
 fi
 
-# ---- Helper function ----
+# ---------- Helper function ----------
 eval_one() {
     local ckpt="$1"
     local result="$2"
@@ -93,99 +96,105 @@ eval_one() {
 }
 
 # ==============================================================
-# SECTION 1: BUG-FIX RE-RUNS (dictabert + CRF)
+# SECTION 1: RETRAINED THREAD‑AWARE (P4, P5, P10, P10v3 seeds)
 # ==============================================================
 echo ""
 echo "================================================================"
-echo "SECTION 1: BUG-FIX RE-RUNS"
+echo "SECTION 1: RETRAINED THREAD-AWARE MODELS"
 echo "================================================================"
 
 eval_one \
-    "models/checkpoints/dictabert_crf/P4v2_thread_fixed" \
-    "results/dictabert_crf/P4v2_thread_fixed" \
-    "$GOLD_BIO" \
+    "models/checkpoints/dictabert_crf/P4_crf_thread_aware" \
+    "results/dictabert_crf/P4_crf_thread_aware" \
+    "$GOLD_BIO_THREAD" \
     "data/processed_thread_aware/test.jsonl" \
     "dicta-il/dictabert"
 
 eval_one \
-    "models/checkpoints/dictabert_crf/P5v2_thread_no_enriched_fixed" \
-    "results/dictabert_crf/P5v2_thread_no_enriched_fixed" \
-    "$GOLD_BIO" \
+    "models/checkpoints/dictabert_crf/P5_crf_thread_no_enriched" \
+    "results/dictabert_crf/P5_crf_thread_no_enriched" \
+    "$GOLD_BIO_THREAD" \
     "data/processed_thread_aware_no_enriched/test.jsonl" \
     "dicta-il/dictabert"
 
 eval_one \
-    "models/checkpoints/dictabert_crf/P10v3_fixed_weights" \
-    "results/dictabert_crf/P10v3_fixed_weights" \
-    "$GOLD_IO" \
+    "models/checkpoints/dictabert_crf/P10_crf_thread_aware_io_fixed" \
+    "results/dictabert_crf/P10_crf_thread_aware_io_fixed" \
+    "$GOLD_IO_THREAD" \
     "data/processed_thread_aware_io/test.jsonl" \
     "dicta-il/dictabert"
 
-# ==============================================================
-# SECTION 2: NEW COMBOS (dictabert + CRF)
-# ==============================================================
-echo ""
-echo "================================================================"
-echo "SECTION 2: NEW COMBOS (dictabert + CRF)"
-echo "================================================================"
+for seed in 123 2026 7777; do
+    eval_one \
+        "models/checkpoints/dictabert_crf/P10v3_seed${seed}_fixed" \
+        "results/dictabert_crf/P10v3_seed${seed}_fixed" \
+        "$GOLD_IO_THREAD" \
+        "data/processed_thread_aware_io/test.jsonl" \
+        "dicta-il/dictabert"
+done
 
-eval_one \
-    "models/checkpoints/dictabert_crf/P10v4_focal" \
-    "results/dictabert_crf/P10v4_focal" \
-    "$GOLD_IO" \
-    "data/processed_thread_aware_io/test.jsonl" \
-    "dicta-il/dictabert"
-
-eval_one \
-    "models/checkpoints/dictabert_crf/P4v3_thread_focal" \
-    "results/dictabert_crf/P4v3_thread_focal" \
-    "$GOLD_BIO" \
-    "data/processed_thread_aware/test.jsonl" \
-    "dicta-il/dictabert"
-
-eval_one \
-    "models/checkpoints/dictabert_crf/P10v3_lr1e5" \
-    "results/dictabert_crf/P10v3_lr1e5" \
-    "$GOLD_IO" \
-    "data/processed_thread_aware_io/test.jsonl" \
-    "dicta-il/dictabert"
+for variant in P10v3_fixed_weights P10v3_lr1e5; do
+    eval_one \
+        "models/checkpoints/dictabert_crf/$variant" \
+        "results/dictabert_crf/$variant" \
+        "$GOLD_IO_THREAD" \
+        "data/processed_thread_aware_io/test.jsonl" \
+        "dicta-il/dictabert"
+done
 
 # ==============================================================
-# SECTION 3: SEED SWEEP (for confidence intervals)
+# SECTION 2: OLD THREAD‑AWARE BASELINES
 # ==============================================================
 echo ""
 echo "================================================================"
-echo "SECTION 3: SEED SWEEP"
+echo "SECTION 2: OLD THREAD-AWARE (no real context)"
 echo "================================================================"
 
+rm -f results/dictabert_crf/P10_crf_thread_aware_io/gold/evaluation_results.json
 eval_one \
-    "models/checkpoints/dictabert_crf/P10v3_seed123" \
-    "results/dictabert_crf/P10v3_seed123" \
-    "$GOLD_IO" \
-    "data/processed_thread_aware_io/test.jsonl" \
-    "dicta-il/dictabert"
-
-eval_one \
-    "models/checkpoints/dictabert_crf/P10v3_seed2026" \
-    "results/dictabert_crf/P10v3_seed2026" \
-    "$GOLD_IO" \
-    "data/processed_thread_aware_io/test.jsonl" \
-    "dicta-il/dictabert"
-
-eval_one \
-    "models/checkpoints/dictabert_crf/P10v3_seed7777" \
-    "results/dictabert_crf/P10v3_seed7777" \
-    "$GOLD_IO" \
+    "models/checkpoints/dictabert_crf/P10_crf_thread_aware_io" \
+    "results/dictabert_crf/P10_crf_thread_aware_io" \
+    "$GOLD_IO_THREAD" \
     "data/processed_thread_aware_io/test.jsonl" \
     "dicta-il/dictabert"
 
 # ==============================================================
-# SECTION 4: DICTABERT-LARGE + CRF (all variants)
+# SECTION 3: NON‑THREAD MODELS
 # ==============================================================
 echo ""
 echo "================================================================"
-echo "SECTION 4: DICTABERT-LARGE + CRF"
+echo "SECTION 3: NON-THREAD MODELS"
 echo "================================================================"
+
+rm -f results/dictabert_crf/A7_crf_io_scheme/gold/evaluation_results.json
+eval_one \
+    "results/dictabert_crf/A7_crf_io_scheme" \
+    "results/dictabert_crf/A7_crf_io_scheme" \
+    "$GOLD_IO_PLAIN" \
+    "data/processed_io/test.jsonl" \
+    "dicta-il/dictabert"
+
+# ==============================================================
+# SECTION 4: DICTABERT‑LARGE + CRF
+# ==============================================================
+echo ""
+echo "================================================================"
+echo "SECTION 4: DICTABERT-LARGE + CRF (thread-aware)"
+echo "================================================================"
+
+eval_one \
+    "models/checkpoints/dictabert_large_crf/P4_large_crf_thread_bio" \
+    "results/dictabert_large_crf/P4_large_crf_thread_bio" \
+    "$GOLD_LARGE_BIO_THREAD" \
+    "data/processed_thread_aware_large/test.jsonl" \
+    "dicta-il/dictabert-large"
+
+eval_one \
+    "models/checkpoints/dictabert_large_crf/P10_large_crf_thread_io" \
+    "results/dictabert_large_crf/P10_large_crf_thread_io" \
+    "$GOLD_LARGE_IO_THREAD" \
+    "data/processed_thread_aware_io_large/test.jsonl" \
+    "dicta-il/dictabert-large"
 
 eval_one \
     "models/checkpoints/dictabert_large_crf/P2_crf_weighted" \
@@ -194,64 +203,12 @@ eval_one \
     "data/processed_v2/test.jsonl" \
     "dicta-il/dictabert-large"
 
-eval_one \
-    "models/checkpoints/dictabert_large_crf/P10_large_crf_thread_io" \
-    "results/dictabert_large_crf/P10_large_crf_thread_io" \
-    "$GOLD_LARGE_IO" \
-    "data/processed_thread_aware_io/test.jsonl" \
-    "dicta-il/dictabert-large"
-
-eval_one \
-    "models/checkpoints/dictabert_large_crf/P10v4_large_focal" \
-    "results/dictabert_large_crf/P10v4_large_focal" \
-    "$GOLD_LARGE_IO" \
-    "data/processed_thread_aware_io/test.jsonl" \
-    "dicta-il/dictabert-large"
-
-eval_one \
-    "models/checkpoints/dictabert_large_crf/P4_large_crf_thread_bio" \
-    "results/dictabert_large_crf/P4_large_crf_thread_bio" \
-    "$GOLD_LARGE_BIO" \
-    "data/processed_thread_aware/test.jsonl" \
-    "dicta-il/dictabert-large"
-
-eval_one \
-    "models/checkpoints/dictabert_large_crf/P10_large_lr3e5" \
-    "results/dictabert_large_crf/P10_large_lr3e5" \
-    "$GOLD_LARGE_IO" \
-    "data/processed_thread_aware_io/test.jsonl" \
-    "dicta-il/dictabert-large"
-
 # ==============================================================
-# SECTION 5: RE-EVAL BROKEN OLD RUNS (IO gold was wrong)
+# SECTION 5: BINARY CLASSIFICATION FROM SPANS
 # ==============================================================
 echo ""
 echo "================================================================"
-echo "SECTION 5: RE-EVAL BROKEN OLD RUNS"
-echo "================================================================"
-
-rm -f results/dictabert_crf/P10_crf_thread_aware_io/gold/evaluation_results.json
-eval_one \
-    "models/checkpoints/dictabert_crf/P10_crf_thread_aware_io" \
-    "results/dictabert_crf/P10_crf_thread_aware_io" \
-    "$GOLD_IO" \
-    "data/processed_thread_aware_io/test.jsonl" \
-    "dicta-il/dictabert"
-
-rm -f results/dictabert_crf/A7_crf_io_scheme/gold/evaluation_results.json
-eval_one \
-    "results/dictabert_crf/A7_crf_io_scheme" \
-    "results/dictabert_crf/A7_crf_io_scheme" \
-    "$GOLD_IO" \
-    "data/processed_io/test.jsonl" \
-    "dicta-il/dictabert"
-
-# ==============================================================
-# SECTION 6: BINARY CLASSIFICATION FROM SPANS
-# ==============================================================
-echo ""
-echo "================================================================"
-echo "SECTION 6: BINARY CLASSIFICATION METRICS"
+echo "SECTION 5: BINARY CLASSIFICATION METRICS"
 echo "================================================================"
 
 python scripts/local/compute_binary_from_spans.py --batch
@@ -264,26 +221,23 @@ echo "================================================================"
 echo "RESULTS SUMMARY TABLE"
 echo "================================================================"
 echo ""
-printf "%-50s %-8s %-8s %-8s %-8s\n" "Config" "Split" "F1" "Prec" "Recall"
+printf "%-55s %-8s %-8s %-8s %-8s\n" "Config" "Split" "F1" "Prec" "Recall"
 echo "--------------------------------------------------------------------------------------------------------------"
 
 for result_dir in \
-    results/dictabert_crf/P4v2_thread_fixed \
-    results/dictabert_crf/P5v2_thread_no_enriched_fixed \
+    results/dictabert_crf/P4_crf_thread_aware \
+    results/dictabert_crf/P5_crf_thread_no_enriched \
+    results/dictabert_crf/P10_crf_thread_aware_io_fixed \
+    results/dictabert_crf/P10v3_seed123_fixed \
+    results/dictabert_crf/P10v3_seed2026_fixed \
+    results/dictabert_crf/P10v3_seed7777_fixed \
     results/dictabert_crf/P10v3_fixed_weights \
-    results/dictabert_crf/P10v4_focal \
-    results/dictabert_crf/P4v3_thread_focal \
     results/dictabert_crf/P10v3_lr1e5 \
-    results/dictabert_crf/P10v3_seed123 \
-    results/dictabert_crf/P10v3_seed2026 \
-    results/dictabert_crf/P10v3_seed7777 \
-    results/dictabert_large_crf/P2_crf_weighted \
-    results/dictabert_large_crf/P10_large_crf_thread_io \
-    results/dictabert_large_crf/P10v4_large_focal \
-    results/dictabert_large_crf/P4_large_crf_thread_bio \
-    results/dictabert_large_crf/P10_large_lr3e5 \
     results/dictabert_crf/P10_crf_thread_aware_io \
-    results/dictabert_crf/A7_crf_io_scheme; do
+    results/dictabert_crf/A7_crf_io_scheme \
+    results/dictabert_large_crf/P4_large_crf_thread_bio \
+    results/dictabert_large_crf/P10_large_crf_thread_io \
+    results/dictabert_large_crf/P2_crf_weighted; do
 
     name=$(echo "$result_dir" | sed 's|results/||')
     for split in gold silver; do
@@ -297,7 +251,7 @@ f1 = d.get('entity_f1', 'N/A')
 p = d.get('entity_precision', 'N/A')
 r = d.get('entity_recall', 'N/A')
 print(f'$name|$split|{f1}|{p}|{r}')
-" | awk -F'|' '{printf "%-50s %-8s %-8s %-8s %-8s\n", $1, $2, $3, $4, $5}'
+" | awk -F'|' '{printf "%-55s %-8s %-8s %-8s %-8s\n", $1, $2, $3, $4, $5}'
         fi
     done
 done

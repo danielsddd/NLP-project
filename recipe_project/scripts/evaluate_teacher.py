@@ -393,3 +393,47 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# ── CORRECTED METRIC FUNCTIONS (replaces old compute_span_metrics) ──────────
+
+def get_spans_from_bio(seq):
+    spans = []
+    current_label, start_idx = None, -1
+    for i, tag in enumerate(seq):
+        if tag.startswith("B-"):
+            if current_label is not None:
+                spans.append((current_label, start_idx, i - 1))
+            current_label, start_idx = tag[2:], i
+        elif tag.startswith("I-") and current_label == tag[2:]:
+            continue
+        else:
+            if current_label is not None:
+                spans.append((current_label, start_idx, i - 1))
+                current_label = None
+    if current_label is not None:
+        spans.append((current_label, start_idx, len(seq) - 1))
+    return spans
+
+def compute_relaxed_metrics(true_seqs, pred_seqs):
+    total_true = total_pred = matched_true = matched_pred = 0
+    for true_seq, pred_seq in zip(true_seqs, pred_seqs):
+        true_spans = get_spans_from_bio(true_seq)
+        pred_spans = get_spans_from_bio(pred_seq)
+        total_true += len(true_spans)
+        total_pred += len(pred_spans)
+        for t_label, t_start, t_end in true_spans:
+            t_range = set(range(t_start, t_end + 1))
+            if any(p_label == t_label and t_range & set(range(p_start, p_end + 1))
+                   for p_label, p_start, p_end in pred_spans):
+                matched_true += 1
+        for p_label, p_start, p_end in pred_spans:
+            p_range = set(range(p_start, p_end + 1))
+            if any(t_label == p_label and p_range & set(range(t_start, t_end + 1))
+                   for t_label, t_start, t_end in true_spans):
+                matched_pred += 1
+    p = matched_pred / total_pred if total_pred > 0 else 0.0
+    r = matched_true / total_true if total_true > 0 else 0.0
+    f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0.0
+    return {"Relaxed Precision": round(p, 4),
+            "Relaxed Recall":    round(r, 4),
+            "Relaxed F1":        round(f1, 4)}
