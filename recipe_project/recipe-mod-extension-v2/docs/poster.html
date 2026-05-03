@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Recipe Mod Detector – Hebrew</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Heebo', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #fff;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            text-align: center;
+            direction: rtl;
+        }
+        .container {
+            max-width: 700px;
+            padding: 50px 30px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        img.logo {
+            width: 120px;
+            height: 120px;
+            margin-bottom: 25px;
+            filter: drop-shadow(0 4px 8px rgba(0,0,0,0.6));
+        }
+        h1 {
+            font-size: 2.4em;
+            font-weight: 700;
+            color: #FF9800;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            font-size: 1.2em;
+            color: #aaa;
+            margin-bottom: 30px;
+            line-height: 1.5;
+            max-width: 500px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        .features {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+        .feature-tag {
+            background: rgba(255,255,255,0.08);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 30px;
+            padding: 8px 20px;
+            font-size: 0.95em;
+            color: #ddd;
+        }
+        .highlight {
+            color: #FF9800;
+            font-weight: 600;
+        }
+        .footer {
+            font-size: 0.85em;
+            color: #666;
+            margin-top: 20px;
+        }
+        @media (max-width: 500px) {
+            h1 { font-size: 1.8em; }
+            .container { padding: 30px 20px; }
+        }
+    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <!-- Path fixed: icon is in ../ext2/icons/ relative to this file in docs/ -->
+        <img class="logo" src="../ext2/icons/icon128.png" alt="Recipe Mod Detector Icon"
+             onerror="this.style.display='none';this.nextElementSibling.style.display='block';">
+        <span style="display:none;font-size: 4em;">🧑‍🍳</span>
+
+        <h1>Recipe Mod Detector</h1>
+        <p class="subtitle">
+            Automatically finds recipe modifications in Hebrew YouTube comments — 
+            <span class="highlight">substitutions, additions, quantities</span> and <span class="highlight">techniques</span> — 
+            and shows them right next to the video.
+        </p>
+
+        <div class="features">
+            <span class="feature-tag">🧠 DictaBERT‑large AI</span>
+            <span class="feature-tag">📌 Real‑time extraction</span>
+            <span class="feature-tag">💬 Reads ALL comments</span>
+            <span class="feature-tag">📊 Confidence scores</span>
+            <span class="feature-tag">🎨 YouTube‑style dark sidebar</span>
+        </div>
+
+        <p style="font-size:1.1em; color:#ccc; max-width:500px; margin:0 auto;">
+            Built for the <strong>2026 NLP Course</strong> at Tel‑Aviv University<br>
+            by Daniel Simanovsky &amp; Roei Ben Artzi
+        </p>
+        <p class="footer">Model: DanielDDDS/hebrew-recipe-modification-ner &nbsp;|&nbsp; Dataset: recipe-modifications-v2</p>
+    </div>
+</body>
+</html>
