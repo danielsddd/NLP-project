@@ -1,0 +1,19 @@
+{
+  "entity_f1": 0.294,
+  "entity_precision": 0.3041,
+  "entity_recall": 0.2845,
+  "ci_95_low": 0.2309,
+  "ci_95_high": 0.3592,
+  "relaxed_f1": 0.5481,
+  "relaxed_precision": 0.6196,
+  "relaxed_recall": 0.4914,
+  "token_f1": 0.4119,
+  "token_precision": 0.5111,
+  "token_recall": 0.3667,
+  "n_examples": 1519,
+  "model_path": "models/checkpoints/dictabert_crf/P4_crf_thread_aware",
+  "test_file": "data/processed_thread_aware/test.jsonl",
+  "classification_report": "              precision    recall  f1-score   support\n\n    ADDITION       0.35      0.24      0.29        58\n    QUANTITY       0.29      0.13      0.18        39\nSUBSTITUTION       0.29      0.37      0.32        71\n   TECHNIQUE       0.30      0.33      0.31        64\n\n   micro avg       0.30      0.28      0.29       232\n   macro avg       0.31      0.27      0.28       232\nweighted avg       0.31      0.28      0.29       232\n",
+  "gold_scheme": "BIO",
+  "model_scheme": "BIO"
+}

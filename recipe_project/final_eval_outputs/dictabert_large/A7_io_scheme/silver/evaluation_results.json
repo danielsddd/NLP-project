@@ -1,0 +1,47 @@
+{
+  "token_accuracy": 0.934445143696245,
+  "entity_f1": 0.00903954802259887,
+  "entity_precision": 0.008639308855291577,
+  "entity_recall": 0.009478672985781991,
+  "relaxed_f1": 0.1859,
+  "relaxed_precision": 0.1185,
+  "relaxed_recall": 0.4315,
+  "token_f1": 0.0321,
+  "token_precision": 0.0345,
+  "token_recall": 0.0341,
+  "per_aspect": {
+    "SUBSTITUTION": {
+      "f1": 0.020202020202020204,
+      "precision": 0.021505376344086023,
+      "recall": 0.01904761904761905
+    },
+    "QUANTITY": {
+      "f1": 0.0,
+      "precision": 0.0,
+      "recall": 0.0
+    },
+    "TECHNIQUE": {
+      "f1": 0.0,
+      "precision": 0.0,
+      "recall": 0.0
+    },
+    "ADDITION": {
+      "f1": 0.0,
+      "precision": 0.0,
+      "recall": 0.0
+    }
+  },
+  "error_counts": {
+    "span_boundary": 167,
+    "aspect_confusion": 194,
+    "false_negative": 57,
+    "false_positive": 324,
+    "correct": 1241
+  },
+  "bootstrap_ci": {
+    "lower": 0.0021317453806173003,
+    "upper": 0.018890213449865183
+  },
+  "num_examples": 1518,
+  "model_path": "results/dictabert_large/A7_io_scheme/best_model"
+}

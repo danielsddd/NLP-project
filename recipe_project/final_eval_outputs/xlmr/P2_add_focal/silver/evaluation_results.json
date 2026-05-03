@@ -1,0 +1,47 @@
+{
+  "token_accuracy": 0.9538623913152736,
+  "entity_f1": 0.2476190476190476,
+  "entity_precision": 0.24375,
+  "entity_recall": 0.25161290322580643,
+  "relaxed_f1": 0.5851,
+  "relaxed_precision": 0.6357,
+  "relaxed_recall": 0.5419,
+  "token_f1": 0.4359,
+  "token_precision": 0.5284,
+  "token_recall": 0.3761,
+  "per_aspect": {
+    "SUBSTITUTION": {
+      "f1": 0.24561403508771928,
+      "precision": 0.2413793103448276,
+      "recall": 0.25
+    },
+    "QUANTITY": {
+      "f1": 0.22222222222222224,
+      "precision": 0.22727272727272727,
+      "recall": 0.21739130434782608
+    },
+    "TECHNIQUE": {
+      "f1": 0.2549019607843137,
+      "precision": 0.24074074074074073,
+      "recall": 0.2708333333333333
+    },
+    "ADDITION": {
+      "f1": 0.2592592592592593,
+      "precision": 0.2692307692307692,
+      "recall": 0.25
+    }
+  },
+  "error_counts": {
+    "span_boundary": 51,
+    "aspect_confusion": 16,
+    "false_negative": 49,
+    "false_positive": 45,
+    "correct": 894
+  },
+  "bootstrap_ci": {
+    "lower": 0.18122801463345994,
+    "upper": 0.3119298588066888
+  },
+  "num_examples": 1012,
+  "model_path": "models/checkpoints/xlmr/P2_add_focal/best_model"
+}

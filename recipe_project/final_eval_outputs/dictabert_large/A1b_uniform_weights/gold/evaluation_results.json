@@ -1,0 +1,47 @@
+{
+  "token_accuracy": 0.9680802553579572,
+  "entity_f1": 0.23423423423423423,
+  "entity_precision": 0.1780821917808219,
+  "entity_recall": 0.34210526315789475,
+  "relaxed_f1": 0.593,
+  "relaxed_precision": 0.5088,
+  "relaxed_recall": 0.7105,
+  "token_f1": 0.3934,
+  "token_precision": 0.3837,
+  "token_recall": 0.4564,
+  "per_aspect": {
+    "SUBSTITUTION": {
+      "f1": 0.34146341463414637,
+      "precision": 0.23333333333333334,
+      "recall": 0.6363636363636364
+    },
+    "QUANTITY": {
+      "f1": 0.12500000000000003,
+      "precision": 0.09090909090909091,
+      "recall": 0.2
+    },
+    "TECHNIQUE": {
+      "f1": 0.11764705882352941,
+      "precision": 0.1,
+      "recall": 0.14285714285714285
+    },
+    "ADDITION": {
+      "f1": 0.3,
+      "precision": 0.25,
+      "recall": 0.375
+    }
+  },
+  "error_counts": {
+    "span_boundary": 15,
+    "aspect_confusion": 3,
+    "false_negative": 7,
+    "false_positive": 34,
+    "correct": 459
+  },
+  "bootstrap_ci": {
+    "lower": 0.11106770833333336,
+    "upper": 0.37368742368742364
+  },
+  "num_examples": 496,
+  "model_path": "results/dictabert_large/A1b_uniform_weights/best_model"
+}

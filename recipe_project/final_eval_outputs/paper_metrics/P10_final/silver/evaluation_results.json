@@ -1,0 +1,7 @@
+{
+  "entity_f1": 0.3302,
+  "entity_precision": 0.3586,
+  "entity_recall": 0.306,
+  "n_examples": 1519,
+  "classification_report": "              precision    recall  f1-score   support\n\n    ADDITION       0.40      0.36      0.38        58\n    QUANTITY       0.26      0.26      0.26        39\nSUBSTITUTION       0.39      0.31      0.34        71\n   TECHNIQUE       0.37      0.28      0.32        64\n\n   micro avg       0.36      0.31      0.33       232\n   macro avg       0.35      0.30      0.32       232\nweighted avg       0.36      0.31      0.33       232\n"
+}

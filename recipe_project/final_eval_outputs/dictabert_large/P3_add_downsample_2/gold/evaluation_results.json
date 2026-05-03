@@ -1,0 +1,47 @@
+{
+  "token_accuracy": 0.9407204742362061,
+  "entity_f1": 0.12560386473429952,
+  "entity_precision": 0.07692307692307693,
+  "entity_recall": 0.34210526315789475,
+  "relaxed_f1": 0.4346,
+  "relaxed_precision": 0.2899,
+  "relaxed_recall": 0.8684,
+  "token_f1": 0.3345,
+  "token_precision": 0.2466,
+  "token_recall": 0.5947,
+  "per_aspect": {
+    "SUBSTITUTION": {
+      "f1": 0.15000000000000002,
+      "precision": 0.08695652173913043,
+      "recall": 0.5454545454545454
+    },
+    "QUANTITY": {
+      "f1": 0.06060606060606061,
+      "precision": 0.03571428571428571,
+      "recall": 0.2
+    },
+    "TECHNIQUE": {
+      "f1": 0.058823529411764705,
+      "precision": 0.037037037037037035,
+      "recall": 0.14285714285714285
+    },
+    "ADDITION": {
+      "f1": 0.30769230769230765,
+      "precision": 0.2222222222222222,
+      "recall": 0.5
+    }
+  },
+  "error_counts": {
+    "span_boundary": 20,
+    "aspect_confusion": 5,
+    "false_negative": 0,
+    "false_positive": 123,
+    "correct": 397
+  },
+  "bootstrap_ci": {
+    "lower": 0.06025595815333984,
+    "upper": 0.20004587155963297
+  },
+  "num_examples": 496,
+  "model_path": "models/checkpoints/dictabert_large/P3_add_downsample_2/best_model"
+}

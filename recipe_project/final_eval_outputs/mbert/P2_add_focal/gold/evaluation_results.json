@@ -1,0 +1,47 @@
+{
+  "token_accuracy": 0.9585725220053578,
+  "entity_f1": 0.2616822429906542,
+  "entity_precision": 0.2028985507246377,
+  "entity_recall": 0.3684210526315789,
+  "relaxed_f1": 0.5375,
+  "relaxed_precision": 0.4426,
+  "relaxed_recall": 0.6842,
+  "token_f1": 0.4166,
+  "token_precision": 0.3977,
+  "token_recall": 0.4959,
+  "per_aspect": {
+    "SUBSTITUTION": {
+      "f1": 0.37209302325581395,
+      "precision": 0.25,
+      "recall": 0.7272727272727273
+    },
+    "QUANTITY": {
+      "f1": 0.15384615384615385,
+      "precision": 0.125,
+      "recall": 0.2
+    },
+    "TECHNIQUE": {
+      "f1": 0.1379310344827586,
+      "precision": 0.13333333333333333,
+      "recall": 0.14285714285714285
+    },
+    "ADDITION": {
+      "f1": 0.2727272727272727,
+      "precision": 0.21428571428571427,
+      "recall": 0.375
+    }
+  },
+  "error_counts": {
+    "span_boundary": 13,
+    "aspect_confusion": 4,
+    "false_negative": 7,
+    "false_positive": 35,
+    "correct": 459
+  },
+  "bootstrap_ci": {
+    "lower": 0.1320754716981132,
+    "upper": 0.4077878692974214
+  },
+  "num_examples": 496,
+  "model_path": "models/checkpoints/mbert/P2_add_focal/best_model"
+}

@@ -1,0 +1,47 @@
+{
+  "token_accuracy": 0.9602494154325799,
+  "entity_f1": 0.20155038759689922,
+  "entity_precision": 0.14285714285714285,
+  "entity_recall": 0.34210526315789475,
+  "relaxed_f1": 0.5696,
+  "relaxed_precision": 0.4375,
+  "relaxed_recall": 0.8158,
+  "token_f1": 0.3629,
+  "token_precision": 0.3132,
+  "token_recall": 0.4841,
+  "per_aspect": {
+    "SUBSTITUTION": {
+      "f1": 0.30434782608695654,
+      "precision": 0.2,
+      "recall": 0.6363636363636364
+    },
+    "QUANTITY": {
+      "f1": 0.11764705882352941,
+      "precision": 0.08333333333333333,
+      "recall": 0.2
+    },
+    "TECHNIQUE": {
+      "f1": 0.09523809523809523,
+      "precision": 0.07142857142857142,
+      "recall": 0.14285714285714285
+    },
+    "ADDITION": {
+      "f1": 0.25,
+      "precision": 0.1875,
+      "recall": 0.375
+    }
+  },
+  "error_counts": {
+    "span_boundary": 18,
+    "aspect_confusion": 5,
+    "false_negative": 2,
+    "false_positive": 52,
+    "correct": 447
+  },
+  "bootstrap_ci": {
+    "lower": 0.09521008403361345,
+    "upper": 0.3305847262785062
+  },
+  "num_examples": 496,
+  "model_path": "models/checkpoints/alephbert/P1_add_weights/best_model"
+}

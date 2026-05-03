@@ -1,0 +1,70 @@
+{
+  "entity_f1": 0.0,
+  "entity_precision": 0.0,
+  "entity_recall": 0.0,
+  "ci_95_low": 0.0,
+  "ci_95_high": 0.0,
+  "relaxed_f1": 0.0455,
+  "relaxed_precision": 0.0588,
+  "relaxed_recall": 0.037,
+  "relaxed_ci_95_low": 0.0,
+  "relaxed_ci_95_high": 0.1482,
+  "per_aspect_relaxed": {
+    "SUBSTITUTION": {
+      "relaxed_p": 0.0588,
+      "relaxed_r": 0.1111,
+      "relaxed_f1": 0.0769,
+      "n_gold": 9,
+      "n_pred": 34
+    },
+    "TECHNIQUE": {
+      "relaxed_p": 0.0,
+      "relaxed_r": 0.0,
+      "relaxed_f1": 0.0,
+      "n_gold": 8,
+      "n_pred": 0
+    },
+    "QUANTITY": {
+      "relaxed_p": 0.0,
+      "relaxed_r": 0.0,
+      "relaxed_f1": 0.0,
+      "n_gold": 6,
+      "n_pred": 0
+    },
+    "ADDITION": {
+      "relaxed_p": 0.0,
+      "relaxed_r": 0.0,
+      "relaxed_f1": 0.0,
+      "n_gold": 4,
+      "n_pred": 0
+    }
+  },
+  "token_f1": 0.0,
+  "token_precision": 0.0,
+  "token_recall": 0.0,
+  "span_error_counts": {
+    "false_negative": 25,
+    "under_extension": 1,
+    "false_positive": 25,
+    "aspect_confusion": 1,
+    "over_extension": 0,
+    "off_by_one": 0
+  },
+  "boundary_errors": 1,
+  "pct_off_by_one": 0.0,
+  "pct_prefix_error": 0,
+  "span_count_stats": {
+    "total_gold_spans": 27,
+    "total_pred_spans": 34,
+    "avg_gold_per_positive": 1.125,
+    "avg_pred_per_positive": 0.708,
+    "n_positive_examples": 24
+  },
+  "prefix_examples": [],
+  "n_examples": 496,
+  "model_path": "models/checkpoints/dictabert_crf/P10v4_focal",
+  "test_file": "data/gold_validation/gold_tokenized_dictabert_io_v2.jsonl",
+  "classification_report": "              precision    recall  f1-score   support\n\n    ADDITION       0.00      0.00      0.00         4\n    QUANTITY       0.00      0.00      0.00         6\nSUBSTITUTION       0.00      0.00      0.00         9\n   TECHNIQUE       0.00      0.00      0.00         8\n\n   micro avg       0.00      0.00      0.00        27\n   macro avg       0.00      0.00      0.00        27\nweighted avg       0.00      0.00      0.00        27\n",
+  "gold_scheme": "IO",
+  "model_scheme": "BIO"
+}

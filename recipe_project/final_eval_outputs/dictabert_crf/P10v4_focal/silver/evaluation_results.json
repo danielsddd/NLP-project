@@ -1,0 +1,71 @@
+{
+  "entity_f1": 0.0,
+  "entity_precision": 0.0,
+  "entity_recall": 0.0,
+  "ci_95_low": 0.0,
+  "ci_95_high": 0.0,
+  "relaxed_f1": 0.233,
+  "relaxed_precision": 0.5571,
+  "relaxed_recall": 0.1473,
+  "relaxed_ci_95_low": 0.1625,
+  "relaxed_ci_95_high": 0.3069,
+  "per_aspect_relaxed": {
+    "SUBSTITUTION": {
+      "relaxed_p": 0.6667,
+      "relaxed_r": 0.4493,
+      "relaxed_f1": 0.5368,
+      "n_gold": 69,
+      "n_pred": 168
+    },
+    "ADDITION": {
+      "relaxed_p": 0.0,
+      "relaxed_r": 0.0,
+      "relaxed_f1": 0.0,
+      "n_gold": 55,
+      "n_pred": 0
+    },
+    "TECHNIQUE": {
+      "relaxed_p": 0.0,
+      "relaxed_r": 0.0,
+      "relaxed_f1": 0.0,
+      "n_gold": 64,
+      "n_pred": 0
+    },
+    "QUANTITY": {
+      "relaxed_p": 0.119,
+      "relaxed_r": 0.0556,
+      "relaxed_f1": 0.0758,
+      "n_gold": 36,
+      "n_pred": 42
+    }
+  },
+  "token_f1": 0.0274,
+  "token_precision": 0.0219,
+  "token_recall": 0.0459,
+  "span_error_counts": {
+    "false_negative": 178,
+    "under_extension": 33,
+    "off_by_one": 14,
+    "false_positive": 51,
+    "aspect_confusion": 13,
+    "over_extension": 0,
+    "prefix_error": 0
+  },
+  "boundary_errors": 33,
+  "pct_off_by_one": 0.4242,
+  "pct_prefix_error": 0.0,
+  "span_count_stats": {
+    "total_gold_spans": 224,
+    "total_pred_spans": 210,
+    "avg_gold_per_positive": 1.287,
+    "avg_pred_per_positive": 1.178,
+    "n_positive_examples": 174
+  },
+  "prefix_examples": [],
+  "n_examples": 1519,
+  "model_path": "models/checkpoints/dictabert_crf/P10v4_focal",
+  "test_file": "data/processed_thread_aware_io/test.jsonl",
+  "classification_report": "              precision    recall  f1-score   support\n\n    ADDITION       0.00      0.00      0.00        55\n    QUANTITY       0.00      0.00      0.00        36\nSUBSTITUTION       0.00      0.00      0.00        69\n   TECHNIQUE       0.00      0.00      0.00        64\n\n   micro avg       0.00      0.00      0.00       224\n   macro avg       0.00      0.00      0.00       224\nweighted avg       0.00      0.00      0.00       224\n",
+  "gold_scheme": "IO",
+  "model_scheme": "BIO"
+}

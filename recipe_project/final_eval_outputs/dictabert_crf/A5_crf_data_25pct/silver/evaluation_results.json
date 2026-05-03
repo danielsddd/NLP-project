@@ -1,0 +1,65 @@
+{
+  "entity_f1": 0.2251,
+  "entity_precision": 0.2011,
+  "entity_recall": 0.2555,
+  "ci_95_low": 0.1646,
+  "ci_95_high": 0.2916,
+  "relaxed_f1": 0.4754,
+  "relaxed_precision": 0.5545,
+  "relaxed_recall": 0.4161,
+  "relaxed_ci_95_low": 0.3927,
+  "relaxed_ci_95_high": 0.554,
+  "per_aspect_relaxed": {
+    "TECHNIQUE": {
+      "relaxed_p": 0.5435,
+      "relaxed_r": 0.463,
+      "relaxed_f1": 0.5,
+      "n_gold": 54,
+      "n_pred": 46
+    },
+    "SUBSTITUTION": {
+      "relaxed_p": 0.5588,
+      "relaxed_r": 0.4167,
+      "relaxed_f1": 0.4774,
+      "n_gold": 48,
+      "n_pred": 34
+    },
+    "QUANTITY": {
+      "relaxed_p": 0.5455,
+      "relaxed_r": 0.2857,
+      "relaxed_f1": 0.375,
+      "n_gold": 21,
+      "n_pred": 11
+    },
+    "ADDITION": {
+      "relaxed_p": 0.6,
+      "relaxed_r": 0.4286,
+      "relaxed_f1": 0.5,
+      "n_gold": 14,
+      "n_pred": 10
+    }
+  },
+  "token_f1": 0.4102,
+  "token_precision": 0.4988,
+  "token_recall": 0.3669,
+  "span_error_counts": {
+    "false_negative": 69,
+    "aspect_confusion": 11,
+    "false_positive": 34,
+    "exact_match": 31,
+    "under_extension": 12,
+    "over_extension": 14,
+    "off_by_one": 11,
+    "prefix_error": 0
+  },
+  "boundary_errors": 26,
+  "pct_off_by_one": 0.4231,
+  "pct_prefix_error": 0.0,
+  "prefix_examples": [],
+  "n_examples": 1518,
+  "model_path": "results/dictabert_crf/A5_crf_data_25pct",
+  "test_file": "data/processed_frac25/test.jsonl",
+  "classification_report": "              precision    recall  f1-score   support\n\n    ADDITION       0.15      0.14      0.15        14\n    QUANTITY       0.18      0.14      0.16        21\nSUBSTITUTION       0.17      0.29      0.22        48\n   TECHNIQUE       0.25      0.30      0.27        54\n\n   micro avg       0.20      0.26      0.23       137\n   macro avg       0.19      0.22      0.20       137\nweighted avg       0.20      0.26      0.22       137\n",
+  "gold_scheme": "BIO",
+  "model_scheme": "BIO"
+}

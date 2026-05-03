@@ -1,0 +1,47 @@
+{
+  "token_accuracy": 0.9484633272578719,
+  "entity_f1": 0.17600000000000002,
+  "entity_precision": 0.1527777777777778,
+  "entity_recall": 0.20754716981132076,
+  "relaxed_f1": 0.5031,
+  "relaxed_precision": 0.503,
+  "relaxed_recall": 0.5031,
+  "token_f1": 0.3749,
+  "token_precision": 0.409,
+  "token_recall": 0.3534,
+  "per_aspect": {
+    "SUBSTITUTION": {
+      "f1": 0.1322314049586777,
+      "precision": 0.12307692307692308,
+      "recall": 0.14285714285714285
+    },
+    "QUANTITY": {
+      "f1": 0.12,
+      "precision": 0.1111111111111111,
+      "recall": 0.13043478260869565
+    },
+    "TECHNIQUE": {
+      "f1": 0.21875,
+      "precision": 0.17721518987341772,
+      "recall": 0.2857142857142857
+    },
+    "ADDITION": {
+      "f1": 0.21052631578947367,
+      "precision": 0.17777777777777778,
+      "recall": 0.25806451612903225
+    }
+  },
+  "error_counts": {
+    "span_boundary": 56,
+    "aspect_confusion": 21,
+    "false_negative": 49,
+    "false_positive": 87,
+    "correct": 866
+  },
+  "bootstrap_ci": {
+    "lower": 0.12157474129981899,
+    "upper": 0.23057849750641413
+  },
+  "num_examples": 1012,
+  "model_path": "models/checkpoints/hebert/P1_add_weights/best_model"
+}

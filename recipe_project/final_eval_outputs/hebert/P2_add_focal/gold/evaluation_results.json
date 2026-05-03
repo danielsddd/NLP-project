@@ -1,0 +1,47 @@
+{
+  "token_accuracy": 0.9627705627705627,
+  "entity_f1": 0.24561403508771928,
+  "entity_precision": 0.18421052631578946,
+  "entity_recall": 0.3684210526315789,
+  "relaxed_f1": 0.5666,
+  "relaxed_precision": 0.4603,
+  "relaxed_recall": 0.7368,
+  "token_f1": 0.3749,
+  "token_precision": 0.3484,
+  "token_recall": 0.4572,
+  "per_aspect": {
+    "SUBSTITUTION": {
+      "f1": 0.3111111111111111,
+      "precision": 0.20588235294117646,
+      "recall": 0.6363636363636364
+    },
+    "QUANTITY": {
+      "f1": 0.16666666666666666,
+      "precision": 0.14285714285714285,
+      "recall": 0.2
+    },
+    "TECHNIQUE": {
+      "f1": 0.11764705882352941,
+      "precision": 0.1,
+      "recall": 0.14285714285714285
+    },
+    "ADDITION": {
+      "f1": 0.3478260869565218,
+      "precision": 0.26666666666666666,
+      "recall": 0.5
+    }
+  },
+  "error_counts": {
+    "span_boundary": 16,
+    "aspect_confusion": 3,
+    "false_negative": 5,
+    "false_positive": 39,
+    "correct": 456
+  },
+  "bootstrap_ci": {
+    "lower": 0.13333333333333333,
+    "upper": 0.3776555023923445
+  },
+  "num_examples": 496,
+  "model_path": "models/checkpoints/hebert/P2_add_focal/best_model"
+}

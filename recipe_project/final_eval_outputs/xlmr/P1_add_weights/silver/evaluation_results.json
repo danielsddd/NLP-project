@@ -1,0 +1,47 @@
+{
+  "token_accuracy": 0.9474292606925667,
+  "entity_f1": 0.20093457943925233,
+  "entity_precision": 0.1575091575091575,
+  "entity_recall": 0.27741935483870966,
+  "relaxed_f1": 0.5376,
+  "relaxed_precision": 0.4641,
+  "relaxed_recall": 0.6387,
+  "token_f1": 0.4234,
+  "token_precision": 0.4134,
+  "token_recall": 0.456,
+  "per_aspect": {
+    "SUBSTITUTION": {
+      "f1": 0.1793103448275862,
+      "precision": 0.14606741573033707,
+      "recall": 0.23214285714285715
+    },
+    "QUANTITY": {
+      "f1": 0.13333333333333333,
+      "precision": 0.09615384615384616,
+      "recall": 0.21739130434782608
+    },
+    "TECHNIQUE": {
+      "f1": 0.1917808219178082,
+      "precision": 0.14285714285714285,
+      "recall": 0.2916666666666667
+    },
+    "ADDITION": {
+      "f1": 0.3548387096774193,
+      "precision": 0.3235294117647059,
+      "recall": 0.39285714285714285
+    }
+  },
+  "error_counts": {
+    "span_boundary": 59,
+    "aspect_confusion": 21,
+    "false_negative": 32,
+    "false_positive": 121,
+    "correct": 859
+  },
+  "bootstrap_ci": {
+    "lower": 0.14673226833552921,
+    "upper": 0.2535683799768306
+  },
+  "num_examples": 1012,
+  "model_path": "models/checkpoints/xlmr/P1_add_weights/best_model"
+}

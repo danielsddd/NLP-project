@@ -1,0 +1,68 @@
+{
+  "entity_f1": 0.0,
+  "entity_precision": 0.0,
+  "entity_recall": 0.0,
+  "ci_95_low": 0.0,
+  "ci_95_high": 0.0,
+  "relaxed_f1": 0.0,
+  "relaxed_precision": 0.0,
+  "relaxed_recall": 0.0,
+  "relaxed_ci_95_low": 0.0,
+  "relaxed_ci_95_high": 0.0,
+  "per_aspect_relaxed": {
+    "QUANTITY": {
+      "relaxed_p": 0.0,
+      "relaxed_r": 0.0,
+      "relaxed_f1": 0.0,
+      "n_gold": 5,
+      "n_pred": 0
+    },
+    "ADDITION": {
+      "relaxed_p": 0.0,
+      "relaxed_r": 0.0,
+      "relaxed_f1": 0.0,
+      "n_gold": 8,
+      "n_pred": 0
+    },
+    "TECHNIQUE": {
+      "relaxed_p": 0.0,
+      "relaxed_r": 0.0,
+      "relaxed_f1": 0.0,
+      "n_gold": 14,
+      "n_pred": 0
+    },
+    "SUBSTITUTION": {
+      "relaxed_p": 0.0,
+      "relaxed_r": 0.0,
+      "relaxed_f1": 0.0,
+      "n_gold": 11,
+      "n_pred": 0
+    }
+  },
+  "token_f1": 0.0,
+  "token_precision": 0.0,
+  "token_recall": 0.0,
+  "span_error_counts": {
+    "false_negative": 38,
+    "over_extension": 0,
+    "under_extension": 0,
+    "off_by_one": 0
+  },
+  "boundary_errors": 0,
+  "pct_off_by_one": 0,
+  "pct_prefix_error": 0,
+  "span_count_stats": {
+    "total_gold_spans": 38,
+    "total_pred_spans": 0,
+    "avg_gold_per_positive": 1.583,
+    "avg_pred_per_positive": 0.0,
+    "n_positive_examples": 24
+  },
+  "prefix_examples": [],
+  "n_examples": 496,
+  "model_path": "models/checkpoints/dictabert_crf/P4v3_thread_focal",
+  "test_file": "data/gold_validation/gold_tokenized_dictabert_v2.jsonl",
+  "classification_report": "              precision    recall  f1-score   support\n\n    ADDITION       0.00      0.00      0.00         8\n    QUANTITY       0.00      0.00      0.00         5\nSUBSTITUTION       0.00      0.00      0.00        11\n   TECHNIQUE       0.00      0.00      0.00        14\n\n   micro avg       0.00      0.00      0.00        38\n   macro avg       0.00      0.00      0.00        38\nweighted avg       0.00      0.00      0.00        38\n",
+  "gold_scheme": "BIO",
+  "model_scheme": "BIO"
+}

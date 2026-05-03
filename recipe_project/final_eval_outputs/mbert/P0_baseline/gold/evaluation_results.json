@@ -1,0 +1,47 @@
+{
+  "token_accuracy": 0.9573287409108304,
+  "entity_f1": 0.2522522522522523,
+  "entity_precision": 0.1917808219178082,
+  "entity_recall": 0.3684210526315789,
+  "relaxed_f1": 0.5364,
+  "relaxed_precision": 0.4308,
+  "relaxed_recall": 0.7105,
+  "token_f1": 0.3933,
+  "token_precision": 0.3655,
+  "token_recall": 0.4893,
+  "per_aspect": {
+    "SUBSTITUTION": {
+      "f1": 0.3555555555555555,
+      "precision": 0.23529411764705882,
+      "recall": 0.7272727272727273
+    },
+    "QUANTITY": {
+      "f1": 0.13333333333333333,
+      "precision": 0.1,
+      "recall": 0.2
+    },
+    "TECHNIQUE": {
+      "f1": 0.1379310344827586,
+      "precision": 0.13333333333333333,
+      "recall": 0.14285714285714285
+    },
+    "ADDITION": {
+      "f1": 0.2727272727272727,
+      "precision": 0.21428571428571427,
+      "recall": 0.375
+    }
+  },
+  "error_counts": {
+    "span_boundary": 13,
+    "aspect_confusion": 5,
+    "false_negative": 6,
+    "false_positive": 38,
+    "correct": 457
+  },
+  "bootstrap_ci": {
+    "lower": 0.13039971949509122,
+    "upper": 0.37935139573070603
+  },
+  "num_examples": 496,
+  "model_path": "models/checkpoints/mbert/P0_baseline/best_model"
+}

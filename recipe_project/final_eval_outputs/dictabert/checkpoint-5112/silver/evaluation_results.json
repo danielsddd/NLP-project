@@ -1,0 +1,41 @@
+{
+  "token_accuracy": 0.9669603524229075,
+  "entity_f1": 0.284931506849315,
+  "entity_precision": 0.22807017543859648,
+  "entity_recall": 0.3795620437956204,
+  "per_aspect": {
+    "SUBSTITUTION": {
+      "f1": 0.3259259259259259,
+      "precision": 0.25287356321839083,
+      "recall": 0.4583333333333333
+    },
+    "QUANTITY": {
+      "f1": 0.1568627450980392,
+      "precision": 0.13333333333333333,
+      "recall": 0.19047619047619047
+    },
+    "TECHNIQUE": {
+      "f1": 0.33576642335766427,
+      "precision": 0.27710843373493976,
+      "recall": 0.42592592592592593
+    },
+    "ADDITION": {
+      "f1": 0.14285714285714285,
+      "precision": 0.10714285714285714,
+      "recall": 0.21428571428571427
+    }
+  },
+  "error_counts": {
+    "span_boundary": 60,
+    "aspect_confusion": 12,
+    "false_negative": 13,
+    "false_positive": 99,
+    "correct": 1381
+  },
+  "bootstrap_ci": {
+    "lower": 0.21545600725653502,
+    "upper": 0.3553384530849337
+  },
+  "num_examples": 1518,
+  "model_path": "models/checkpoints/dictabert/checkpoint-5112/"
+}

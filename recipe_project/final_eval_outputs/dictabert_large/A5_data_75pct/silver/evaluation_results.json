@@ -1,0 +1,47 @@
+{
+  "token_accuracy": 0.9489720998531571,
+  "entity_f1": 0.16383307573415765,
+  "entity_precision": 0.10392156862745099,
+  "entity_recall": 0.38686131386861317,
+  "relaxed_f1": 0.4271,
+  "relaxed_precision": 0.2995,
+  "relaxed_recall": 0.7445,
+  "token_f1": 0.3626,
+  "token_precision": 0.2518,
+  "token_recall": 0.6554,
+  "per_aspect": {
+    "SUBSTITUTION": {
+      "f1": 0.1724137931034483,
+      "precision": 0.10869565217391304,
+      "recall": 0.4166666666666667
+    },
+    "QUANTITY": {
+      "f1": 0.10416666666666667,
+      "precision": 0.06666666666666667,
+      "recall": 0.23809523809523808
+    },
+    "TECHNIQUE": {
+      "f1": 0.1940928270042194,
+      "precision": 0.12568306010928962,
+      "recall": 0.42592592592592593
+    },
+    "ADDITION": {
+      "f1": 0.12195121951219512,
+      "precision": 0.07352941176470588,
+      "recall": 0.35714285714285715
+    }
+  },
+  "error_counts": {
+    "span_boundary": 62,
+    "aspect_confusion": 13,
+    "false_negative": 9,
+    "false_positive": 363,
+    "correct": 1254
+  },
+  "bootstrap_ci": {
+    "lower": 0.12306291390728478,
+    "upper": 0.20741425636162478
+  },
+  "num_examples": 1518,
+  "model_path": "results/dictabert_large/A5_data_75pct/best_model"
+}

@@ -1,0 +1,72 @@
+{
+  "entity_f1": 0.3011,
+  "entity_precision": 0.2545,
+  "entity_recall": 0.3684,
+  "ci_95_low": 0.1551,
+  "ci_95_high": 0.4598,
+  "relaxed_f1": 0.6194,
+  "relaxed_precision": 0.549,
+  "relaxed_recall": 0.7105,
+  "relaxed_ci_95_low": 0.4856,
+  "relaxed_ci_95_high": 0.7353,
+  "per_aspect_relaxed": {
+    "SUBSTITUTION": {
+      "relaxed_p": 0.4583,
+      "relaxed_r": 1.0,
+      "relaxed_f1": 0.6286,
+      "n_gold": 11,
+      "n_pred": 24
+    },
+    "ADDITION": {
+      "relaxed_p": 0.6667,
+      "relaxed_r": 0.75,
+      "relaxed_f1": 0.7059,
+      "n_gold": 8,
+      "n_pred": 9
+    },
+    "QUANTITY": {
+      "relaxed_p": 0.3333,
+      "relaxed_r": 0.4,
+      "relaxed_f1": 0.3636,
+      "n_gold": 5,
+      "n_pred": 6
+    },
+    "TECHNIQUE": {
+      "relaxed_p": 0.75,
+      "relaxed_r": 0.5714,
+      "relaxed_f1": 0.6486,
+      "n_gold": 14,
+      "n_pred": 12
+    }
+  },
+  "token_f1": 0.412,
+  "token_precision": 0.4315,
+  "token_recall": 0.4443,
+  "span_error_counts": {
+    "false_positive": 20,
+    "under_extension": 13,
+    "off_by_one": 5,
+    "false_negative": 8,
+    "exact_match": 14,
+    "aspect_confusion": 3,
+    "over_extension": 0,
+    "prefix_error": 0
+  },
+  "boundary_errors": 13,
+  "pct_off_by_one": 0.3846,
+  "pct_prefix_error": 0.0,
+  "span_count_stats": {
+    "total_gold_spans": 38,
+    "total_pred_spans": 51,
+    "avg_gold_per_positive": 1.583,
+    "avg_pred_per_positive": 1.375,
+    "n_positive_examples": 24
+  },
+  "prefix_examples": [],
+  "n_examples": 496,
+  "model_path": "results/dictabert_crf/A2_crf_downsample_4",
+  "test_file": "data/gold_validation/gold_tokenized_dictabert_v2.jsonl",
+  "classification_report": "              precision    recall  f1-score   support\n\n    ADDITION       0.33      0.38      0.35         8\n    QUANTITY       0.17      0.20      0.18         5\nSUBSTITUTION       0.29      0.73      0.41        11\n   TECHNIQUE       0.17      0.14      0.15        14\n\n   micro avg       0.25      0.37      0.30        38\n   macro avg       0.24      0.36      0.27        38\nweighted avg       0.24      0.37      0.27        38\n",
+  "gold_scheme": "BIO",
+  "model_scheme": "BIO"
+}
