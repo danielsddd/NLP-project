@@ -92,6 +92,21 @@ def compute_relaxed_metrics(true_seqs, pred_seqs):
             "relaxed_recall":    round(r, 4),
             "relaxed_f1":        round(f1, 4)}
 
+
+def bootstrap_relaxed_ci(true_seqs, pred_seqs, n_iter=1000, seed=42):
+    """Return (low, high) 95% bootstrapped CI for relaxed F1."""
+    rng     = __import__("numpy").random.default_rng(seed)
+    indices = list(range(len(true_seqs)))
+    scores  = []
+    for _ in range(n_iter):
+        sample = rng.choice(indices, size=len(indices), replace=True)
+        s_true = [true_seqs[i] for i in sample]
+        s_pred = [pred_seqs[i] for i in sample]
+        scores.append(compute_relaxed_metrics(s_true, s_pred)["relaxed_f1"])
+    lo = float(__import__("numpy").percentile(scores, 2.5))
+    hi = float(__import__("numpy").percentile(scores, 97.5))
+    return round(lo, 4), round(hi, 4)
+
 def compute_token_level_f1(true_seqs, pred_seqs):
     from sklearn.metrics import f1_score, precision_score, recall_score
     y_true = [t for seq in true_seqs for t in seq]
@@ -277,6 +292,7 @@ def evaluate(model_path, test_file, output_dir="results", compute_bootstrap=Fals
     p = precision_score(all_true, all_pred)
     r = recall_score(all_true, all_pred)
     relaxed = compute_relaxed_metrics(all_true, all_pred)
+    relaxed_ci_lo, relaxed_ci_hi = bootstrap_relaxed_ci(all_true, all_pred)
     token   = compute_token_level_f1(all_true, all_pred)
 
     # Token accuracy
@@ -343,6 +359,8 @@ def evaluate(model_path, test_file, output_dir="results", compute_bootstrap=Fals
         "entity_precision":  p,
         "entity_recall":     r,
         "relaxed_f1":        relaxed["relaxed_f1"],
+        "relaxed_ci_95_low":  relaxed_ci_lo,
+        "relaxed_ci_95_high": relaxed_ci_hi,
         "relaxed_precision": relaxed["relaxed_precision"],
         "relaxed_recall":    relaxed["relaxed_recall"],
         "token_f1":          token["token_f1"],
