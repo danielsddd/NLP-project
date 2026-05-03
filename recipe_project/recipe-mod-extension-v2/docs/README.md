@@ -31,7 +31,7 @@ Automatically extracts **recipe modifications** — ingredient substitutions, ad
 *Chocolate Passover cake — 1 Technique (לחורר בשיפוד עץ את העוגה, 100%) detected across 19 comments.*
 
 ![Shakshuka — Quantity detected](../docs/img3.png)
-*Original shakshuka recipe — 1 Quantity (הורדתי קצת בכמויות השמן, 96%) detected across 18 comments.*
+*recipe — 1 Quantity (הורדתי קצת בכמויות השמן, 96%) detected across 18 comments.*
 
 ---
 
