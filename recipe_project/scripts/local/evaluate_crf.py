@@ -39,42 +39,59 @@ def get_spans_from_bio(seq):
 
 def compute_relaxed_metrics(true_seqs, pred_seqs):
     """
-    Relaxed (partial-boundary) Precision, Recall, F1.
-    A predicted span counts as TP if it overlaps by >= 1 token
-    with a gold span of the SAME aspect type.
-    Mathematically guaranteed: Relaxed F1 >= Exact F1.
+    Relaxed (partial-boundary) P/R/F1 — global + per-aspect.
+    TP = predicted span overlaps >= 1 token with gold span of SAME aspect.
+    Guaranteed: relaxed_f1 >= exact_f1.
     """
+    from collections import defaultdict
     total_true = total_pred = matched_true = matched_pred = 0
+    asp_true = defaultdict(int); asp_pred = defaultdict(int)
+    asp_matched_true = defaultdict(int); asp_matched_pred = defaultdict(int)
 
     for true_seq, pred_seq in zip(true_seqs, pred_seqs):
         true_spans = get_spans_from_bio(true_seq)
         pred_spans = get_spans_from_bio(pred_seq)
         total_true += len(true_spans)
         total_pred += len(pred_spans)
+        for t_label, t_start, t_end in true_spans:
+            asp_true[t_label] += 1
+        for p_label, p_start, p_end in pred_spans:
+            asp_pred[p_label] += 1
 
         for t_label, t_start, t_end in true_spans:
             t_range = set(range(t_start, t_end + 1))
-            if any(
-                p_label == t_label and t_range & set(range(p_start, p_end + 1))
-                for p_label, p_start, p_end in pred_spans
-            ):
+            if any(p_label == t_label and t_range & set(range(p_start, p_end + 1))
+                   for p_label, p_start, p_end in pred_spans):
                 matched_true += 1
+                asp_matched_true[t_label] += 1
 
         for p_label, p_start, p_end in pred_spans:
             p_range = set(range(p_start, p_end + 1))
-            if any(
-                t_label == p_label and p_range & set(range(t_start, t_end + 1))
-                for t_label, t_start, t_end in true_spans
-            ):
+            if any(t_label == p_label and p_range & set(range(t_start, t_end + 1))
+                   for t_label, t_start, t_end in true_spans):
                 matched_pred += 1
+                asp_matched_pred[p_label] += 1
 
     p  = matched_pred / total_pred if total_pred > 0 else 0.0
     r  = matched_true / total_true if total_true > 0 else 0.0
     f1 = 2 * p * r / (p + r)      if (p + r)    > 0 else 0.0
+
+    per_aspect_relaxed = {}
+    for asp in set(list(asp_true.keys()) + list(asp_pred.keys())):
+        ap = asp_matched_pred[asp] / asp_pred[asp] if asp_pred[asp] > 0 else 0.0
+        ar = asp_matched_true[asp] / asp_true[asp] if asp_true[asp] > 0 else 0.0
+        af = 2*ap*ar/(ap+ar) if (ap+ar) > 0 else 0.0
+        per_aspect_relaxed[asp] = {
+            "relaxed_p": round(ap, 4), "relaxed_r": round(ar, 4),
+            "relaxed_f1": round(af, 4),
+            "n_gold": asp_true[asp], "n_pred": asp_pred[asp],
+        }
+
     return {
-        "relaxed_precision": round(p,  4),
-        "relaxed_recall":    round(r,  4),
-        "relaxed_f1":        round(f1, 4),
+        "relaxed_precision":    round(p,  4),
+        "relaxed_recall":       round(r,  4),
+        "relaxed_f1":           round(f1, 4),
+        "per_aspect_relaxed":   per_aspect_relaxed,
     }
 
 
@@ -91,6 +108,133 @@ def compute_token_level_f1(true_seqs, pred_seqs):
         "token_precision": round(p,  4),
         "token_recall":    round(r,  4),
         "token_f1":        round(f1, 4),
+    }
+
+
+def bootstrap_relaxed_ci(true_seqs, pred_seqs, n_iter=1000, seed=42):
+    """Bootstrap 95% CI for relaxed F1."""
+    rng     = np.random.default_rng(seed)
+    indices = list(range(len(true_seqs)))
+    scores  = []
+    for _ in range(n_iter):
+        sample = rng.choice(indices, size=len(indices), replace=True)
+        s_true = [true_seqs[i] for i in sample]
+        s_pred = [pred_seqs[i] for i in sample]
+        scores.append(compute_relaxed_metrics(s_true, s_pred)["relaxed_f1"])
+    lo = float(np.percentile(scores, 2.5))
+    hi = float(np.percentile(scores, 97.5))
+    return round(lo, 4), round(hi, 4)
+
+
+# Hebrew prefix set — single-char prefixes that attach to span boundaries
+HEBREW_PREFIXES = {"ב", "ל", "מ", "ה", "ו", "כ", "ש", "ד", "ר"}
+
+def analyze_span_errors(true_seqs, pred_seqs, tokens_seqs=None):
+    """
+    Classify boundary errors into:
+      - over_extension:  pred span longer than gold (pred_len > gold_len)
+      - under_extension: pred span shorter than gold (pred_len < gold_len)
+      - off_by_one:      boundary differs by exactly 1 token
+      - prefix_error:    off-by-one AND the boundary token is a Hebrew prefix char
+      - aspect_confusion: overlap exists but wrong aspect label
+      - false_negative:  gold span with no overlapping pred
+      - false_positive:  pred span with no overlapping gold
+    """
+    from collections import defaultdict
+    counts = defaultdict(int)
+    prefix_examples = []
+
+    for idx, (true_seq, pred_seq) in enumerate(zip(true_seqs, pred_seqs)):
+        true_spans = get_spans_from_bio(true_seq)
+        pred_spans = get_spans_from_bio(pred_seq)
+        toks       = tokens_seqs[idx] if tokens_seqs else None
+
+        matched_p = set()
+        for t_label, t_start, t_end in true_spans:
+            t_range   = set(range(t_start, t_end + 1))
+            t_len     = t_end - t_start + 1
+            overlapping = [(pl, ps, pe) for pl, ps, pe in pred_spans
+                           if t_range & set(range(ps, pe + 1))]
+
+            if not overlapping:
+                counts["false_negative"] += 1
+                continue
+
+            # find best overlapping pred (same aspect preferred)
+            same_asp = [(pl, ps, pe) for pl, ps, pe in overlapping if pl == t_label]
+            best     = same_asp[0] if same_asp else overlapping[0]
+            pl, ps, pe = best
+            p_len    = pe - ps + 1
+
+            if pl != t_label:
+                counts["aspect_confusion"] += 1
+                continue
+
+            matched_p.add((pl, ps, pe))
+
+            if ps == t_start and pe == t_end:
+                counts["exact_match"] += 1
+            else:
+                # boundary error
+                start_diff = abs(ps - t_start)
+                end_diff   = abs(pe - t_end)
+                total_diff = start_diff + end_diff
+
+                if p_len > t_len:
+                    counts["over_extension"] += 1
+                else:
+                    counts["under_extension"] += 1
+
+                if total_diff == 1:
+                    counts["off_by_one"] += 1
+                    # check if boundary token is Hebrew prefix
+                    if toks:
+                        boundary_idx = (ps - 1) if ps < t_start else pe
+                        boundary_idx = max(0, min(boundary_idx, len(toks) - 1))
+                        tok = toks[boundary_idx] if boundary_idx < len(toks) else ""
+                        if tok and tok[0] in HEBREW_PREFIXES:
+                            counts["prefix_error"] += 1
+                            if len(prefix_examples) < 10:
+                                prefix_examples.append({
+                                    "gold": (t_label, t_start, t_end),
+                                    "pred": (pl, ps, pe),
+                                    "boundary_token": tok,
+                                })
+
+        for pl, ps, pe in pred_spans:
+            if (pl, ps, pe) not in matched_p:
+                t_range = set(range(ps, pe + 1))
+                if not any(t_range & set(range(ts, te + 1))
+                           for _, ts, te in true_spans):
+                    counts["false_positive"] += 1
+
+    # boundary error rate among all boundary errors
+    boundary_errors = counts["over_extension"] + counts["under_extension"]
+    pct_off1   = counts["off_by_one"]   / boundary_errors if boundary_errors > 0 else 0
+    pct_prefix = counts["prefix_error"] / counts["off_by_one"] if counts["off_by_one"] > 0 else 0
+
+    return {
+        "counts":           dict(counts),
+        "boundary_errors":  boundary_errors,
+        "pct_off_by_one":   round(pct_off1,   4),
+        "pct_prefix_error": round(pct_prefix, 4),
+        "prefix_examples":  prefix_examples,
+    }
+
+
+def compute_span_count_stats(true_seqs, pred_seqs):
+    """Verbosity bias — avg spans per positive example, gold vs predicted."""
+    true_counts = [len(get_spans_from_bio(seq)) for seq in true_seqs]
+    pred_counts = [len(get_spans_from_bio(seq)) for seq in pred_seqs]
+    pos_idx = [i for i, c in enumerate(true_counts) if c > 0]
+    avg_true = sum(true_counts[i] for i in pos_idx) / len(pos_idx) if pos_idx else 0.0
+    avg_pred = sum(pred_counts[i] for i in pos_idx) / len(pos_idx) if pos_idx else 0.0
+    return {
+        "total_gold_spans":      sum(true_counts),
+        "total_pred_spans":      sum(pred_counts),
+        "avg_gold_per_positive": round(avg_true, 3),
+        "avg_pred_per_positive": round(avg_pred, 3),
+        "n_positive_examples":   len(pos_idx),
     }
 
 
@@ -246,6 +390,13 @@ def evaluate_crf(ckpt_dir, test_file, output_dir, model_name, batch_size=32):
         f"BUG: relaxed_f1={relaxed['relaxed_f1']} < exact_f1={entity_f1:.4f}"
     )
 
+    # Bootstrap CI on relaxed F1
+    relaxed_ci_lo, relaxed_ci_hi = bootstrap_relaxed_ci(all_labels, all_preds)
+
+    # Span error analysis (tokens not available from CRF output — pass None)
+    span_errors  = analyze_span_errors(all_labels, all_preds, tokens_seqs=None)
+    span_counts  = compute_span_count_stats(all_labels, all_preds)
+
     # ── Bootstrap CI (exact F1) ──────────────────────────────────────────────
     rng     = np.random.default_rng(42)
     indices = list(range(len(all_labels)))
@@ -265,26 +416,36 @@ def evaluate_crf(ckpt_dir, test_file, output_dir, model_name, batch_size=32):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     results = {
         # exact
-        "entity_f1":            round(entity_f1, 4),
-        "entity_precision":     round(entity_p,  4),
-        "entity_recall":        round(entity_r,  4),
-        "ci_95_low":            round(ci_low,    4),
-        "ci_95_high":           round(ci_high,   4),
+        "entity_f1":              round(entity_f1, 4),
+        "entity_precision":       round(entity_p,  4),
+        "entity_recall":          round(entity_r,  4),
+        "ci_95_low":              round(ci_low,    4),
+        "ci_95_high":             round(ci_high,   4),
         # relaxed
-        "relaxed_f1":           relaxed["relaxed_f1"],
-        "relaxed_precision":    relaxed["relaxed_precision"],
-        "relaxed_recall":       relaxed["relaxed_recall"],
+        "relaxed_f1":             relaxed["relaxed_f1"],
+        "relaxed_precision":      relaxed["relaxed_precision"],
+        "relaxed_recall":         relaxed["relaxed_recall"],
+        "relaxed_ci_95_low":      relaxed_ci_lo,
+        "relaxed_ci_95_high":     relaxed_ci_hi,
+        "per_aspect_relaxed":     relaxed["per_aspect_relaxed"],
         # token-level
-        "token_f1":             token["token_f1"],
-        "token_precision":      token["token_precision"],
-        "token_recall":         token["token_recall"],
+        "token_f1":               token["token_f1"],
+        "token_precision":        token["token_precision"],
+        "token_recall":           token["token_recall"],
+        # span error analysis
+        "span_error_counts":      span_errors["counts"],
+        "boundary_errors":        span_errors["boundary_errors"],
+        "pct_off_by_one":         span_errors["pct_off_by_one"],
+        "pct_prefix_error":       span_errors["pct_prefix_error"],
+        "span_count_stats":       span_counts,
+        "prefix_examples":        span_errors["prefix_examples"],
         # meta
-        "n_examples":           len(dataset),
-        "model_path":           str(ckpt_dir),
-        "test_file":            str(test_file),
-        "classification_report": report,
-        "gold_scheme":          "IO" if gold_is_io  else "BIO",
-        "model_scheme":         "IO" if is_io_scheme else "BIO",
+        "n_examples":             len(dataset),
+        "model_path":             str(ckpt_dir),
+        "test_file":              str(test_file),
+        "classification_report":  report,
+        "gold_scheme":            "IO" if gold_is_io  else "BIO",
+        "model_scheme":           "IO" if is_io_scheme else "BIO",
     }
 
     out_file = Path(output_dir) / "evaluation_results.json"
@@ -297,11 +458,22 @@ def evaluate_crf(ckpt_dir, test_file, output_dir, model_name, batch_size=32):
     print(f"{'='*60}")
     print(f"  Exact   F1:  {entity_f1:.4f}   "
           f"(P={entity_p:.4f}  R={entity_r:.4f})")
-    print(f"  95% CI:      [{ci_low:.4f}, {ci_high:.4f}]")
+    print(f"  Exact CI:    [{ci_low:.4f}, {ci_high:.4f}]")
     print(f"  Relaxed F1:  {relaxed['relaxed_f1']:.4f}   "
           f"(P={relaxed['relaxed_precision']:.4f}  R={relaxed['relaxed_recall']:.4f})")
+    print(f"  Relaxed CI:  [{relaxed_ci_lo:.4f}, {relaxed_ci_hi:.4f}]")
     print(f"  Token   F1:  {token['token_f1']:.4f}   "
           f"(P={token['token_precision']:.4f}  R={token['token_recall']:.4f})")
+    print(f"  Span counts: gold_avg={span_counts['avg_gold_per_positive']:.2f}  "
+          f"pred_avg={span_counts['avg_pred_per_positive']:.2f}  "
+          f"(over {span_counts['n_positive_examples']} positive examples)")
+    print(f"  Span errors: boundary={span_errors['boundary_errors']}  "
+          f"off-by-1={span_errors['counts'].get('off_by_one',0)}  "
+          f"prefix={span_errors['counts'].get('prefix_error',0)}")
+    print(f"  Per-aspect relaxed F1:")
+    for asp, m in sorted(relaxed["per_aspect_relaxed"].items()):
+        print(f"    {asp:<15s}  relaxed_F1={m['relaxed_f1']:.3f}  "
+              f"(P={m['relaxed_p']:.3f}  R={m['relaxed_r']:.3f}  n={m['n_gold']})")
     print(f"\n{report}")
     print(f"  Saved → {out_file}")
     print(f"{'='*60}")

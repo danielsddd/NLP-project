@@ -57,6 +57,7 @@ python -m src.models.train_joint \
     --batch-size 16 \
     --lr 2e-5 \
     --seed 42 \
+    --focal-gamma 2.0 \
     --class-weights-file data/processed_ds2/stats_merged.json
 
 EXIT_CODE=$?

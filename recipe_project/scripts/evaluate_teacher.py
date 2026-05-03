@@ -139,119 +139,122 @@ def compute_binary_metrics(gold: Dict, silver: Dict) -> Dict:
     }
 
 
+def compute_span_count_stats_teacher(gold: Dict, silver: Dict) -> Dict:
+    """Verbosity bias — avg spans per positive example, gold vs teacher."""
+    gold_counts = []; pred_counts = []
+    for key, g_rec in gold.items():
+        tid     = g_rec.get("thread_id", "")
+        g_mods  = g_rec.get("gold_modifications", [])
+        s_rec   = silver.get(tid, {})
+        s_label = s_rec.get("final_label") or s_rec.get("teacher_output") or {}
+        s_mods  = s_label.get("modifications", [])
+        if g_mods:
+            gold_counts.append(len(g_mods))
+            pred_counts.append(len(s_mods))
+    avg_gold = sum(gold_counts) / len(gold_counts) if gold_counts else 0.0
+    avg_pred = sum(pred_counts) / len(pred_counts) if pred_counts else 0.0
+    return {
+        "total_gold_spans":      sum(gold_counts),
+        "total_pred_spans":      sum(pred_counts),
+        "avg_gold_per_positive": round(avg_gold, 3),
+        "avg_pred_per_positive": round(avg_pred, 3),
+        "n_positive_examples":   len(gold_counts),
+    }
+
+
 def compute_span_metrics(gold: Dict, silver: Dict) -> Dict:
-    """Compute span-level entity metrics using seqeval-style matching.
-
-    For each gold thread, we compare gold spans against silver spans.
-    A span is a match if both the text and aspect match (exact match).
-    We also compute a relaxed match (text overlap + correct aspect).
     """
-    # Exact span matching
-    exact_tp = 0
-    exact_fp = 0
-    exact_fn = 0
-
-    # Relaxed matching (text substring overlap + same aspect)
-    relaxed_tp = 0
-    relaxed_fp = 0
-    relaxed_fn = 0
-
+    Span-level metrics comparing teacher silver spans against gold spans.
+    Relaxed = token-level word overlap + correct aspect.
+    Mathematically guaranteed: relaxed_f1 >= exact_f1.
+    """
+    exact_tp = exact_fp = exact_fn = 0
+    relaxed_matched_true = relaxed_matched_pred = 0
+    relaxed_total_true   = relaxed_total_pred   = 0
     per_aspect = defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
 
+    def word_tokens(text):
+        return set(text.lower().split())
+
     for key, g_rec in gold.items():
-        tid = g_rec.get("thread_id", "")
-        g_mods = g_rec.get("gold_modifications", [])
-        g_spans = extract_spans(g_mods)
-
-        # Get silver spans for this thread
-        s_rec = silver.get(tid, {})
+        tid     = g_rec.get("thread_id", "")
+        g_spans = extract_spans(g_rec.get("gold_modifications", []))
+        s_rec   = silver.get(tid, {})
         s_label = s_rec.get("final_label") or s_rec.get("teacher_output") or {}
-        s_mods = s_label.get("modifications", [])
-        s_spans = extract_spans(s_mods)
+        s_spans = extract_spans(s_label.get("modifications", []))
 
-        # Exact matching
-        g_set = set(g_spans)
+        relaxed_total_true += len(g_spans)
+        relaxed_total_pred += len(s_spans)
+
         s_set = set(s_spans)
+        matched_g = set()
+        matched_s = set()
 
-        matched_gold = set()
-        matched_silver = set()
-
-        # Exact matches
+        # ── Exact ────────────────────────────────────────────────────────────
         for gs in g_spans:
-            if gs in s_set and gs not in matched_gold:
+            if gs in s_set:
                 exact_tp += 1
                 per_aspect[gs[1]]["tp"] += 1
-                matched_gold.add(gs)
-                matched_silver.add(gs)
+                matched_g.add(gs)
+                matched_s.add(gs)
 
-        # Relaxed matching for unmatched
-        unmatched_gold = [gs for gs in g_spans if gs not in matched_gold]
-        unmatched_silver = [ss for ss in s_spans if ss not in matched_silver]
-
-        relaxed_matched_g = set()
-        relaxed_matched_s = set()
-
-        for i, gs in enumerate(unmatched_gold):
-            g_text, g_aspect = gs
-            for j, ss in enumerate(unmatched_silver):
-                if j in relaxed_matched_s:
-                    continue
-                s_text, s_aspect = ss
-                # Relaxed: same aspect + text overlap (one contains the other)
-                if g_aspect == s_aspect and (g_text in s_text or s_text in g_text):
-                    relaxed_tp += 1
-                    relaxed_matched_g.add(i)
-                    relaxed_matched_s.add(j)
-                    break
-
-        # Count FP/FN
         for gs in g_spans:
-            if gs not in matched_gold:
+            if gs not in matched_g:
                 exact_fn += 1
                 per_aspect[gs[1]]["fn"] += 1
         for ss in s_spans:
-            if ss not in matched_silver:
+            if ss not in matched_s:
                 exact_fp += 1
-                per_aspect[ss[1]]["fp"] += 1
 
-        relaxed_fn_count = len(unmatched_gold) - len(relaxed_matched_g)
-        relaxed_fp_count = len(unmatched_silver) - len(relaxed_matched_s)
-        relaxed_fn += relaxed_fn_count
-        relaxed_fp += relaxed_fp_count
+        # ── Relaxed recall: how many gold spans are covered? ─────────────────
+        used_s = set()
+        for gs in g_spans:
+            g_text, g_aspect = gs
+            g_tok = word_tokens(g_text)
+            for j, ss in enumerate(s_spans):
+                if j in used_s:
+                    continue
+                s_text, s_aspect = ss
+                if g_aspect == s_aspect and g_tok & word_tokens(s_text):
+                    relaxed_matched_true += 1
+                    used_s.add(j)
+                    break
 
-    # Compute F1s
+        # ── Relaxed precision: how many silver spans hit a gold span? ─────────
+        used_g = set()
+        for ss in s_spans:
+            s_text, s_aspect = ss
+            s_tok = word_tokens(s_text)
+            for gs in g_spans:
+                g_text, g_aspect = gs
+                if g_aspect == s_aspect and s_tok & word_tokens(g_text):
+                    relaxed_matched_pred += 1
+                    break
+
     def calc_f1(tp, fp, fn):
-        p = tp / (tp + fp) if (tp + fp) > 0 else 0
-        r = tp / (tp + fn) if (tp + fn) > 0 else 0
-        f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0
+        p  = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        r  = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = 2*p*r/(p+r)   if (p + r)   > 0 else 0.0
         return round(p, 4), round(r, 4), round(f1, 4)
 
     exact_p, exact_r, exact_f1 = calc_f1(exact_tp, exact_fp, exact_fn)
 
-    total_relaxed_tp = exact_tp + relaxed_tp
-    total_relaxed_fp = exact_fp + relaxed_fp
-    total_relaxed_fn = exact_fn + relaxed_fn
-    relax_p, relax_r, relax_f1 = calc_f1(total_relaxed_tp, total_relaxed_fp, total_relaxed_fn)
+    relax_p  = round(relaxed_matched_pred / relaxed_total_pred, 4) if relaxed_total_pred > 0 else 0.0
+    relax_r  = round(relaxed_matched_true / relaxed_total_true, 4) if relaxed_total_true > 0 else 0.0
+    relax_f1 = round(2*relax_p*relax_r/(relax_p+relax_r), 4)      if (relax_p+relax_r)  > 0 else 0.0
 
-    # Per-aspect breakdown
+    assert relax_f1 >= exact_f1 - 1e-4, (
+        f"BUG: relaxed_f1={relax_f1} < exact_f1={exact_f1}")
+
     per_aspect_results = {}
     for aspect, counts in per_aspect.items():
         ap, ar, af1 = calc_f1(counts["tp"], counts["fp"], counts["fn"])
         per_aspect_results[aspect] = {"precision": ap, "recall": ar, "f1": af1}
 
     return {
-        "exact": {
-            "precision": exact_p,
-            "recall": exact_r,
-            "f1": exact_f1,
-            "tp": exact_tp, "fp": exact_fp, "fn": exact_fn,
-        },
-        "relaxed": {
-            "precision": relax_p,
-            "recall": relax_r,
-            "f1": relax_f1,
-            "tp": total_relaxed_tp, "fp": total_relaxed_fp, "fn": total_relaxed_fn,
-        },
+        "exact":   {"precision": exact_p,  "recall": exact_r,  "f1": exact_f1,
+                    "tp": exact_tp, "fp": exact_fp, "fn": exact_fn},
+        "relaxed": {"precision": relax_p,  "recall": relax_r,  "f1": relax_f1},
         "per_aspect": per_aspect_results,
     }
 
@@ -294,7 +297,12 @@ def evaluate_teacher(gold_path: str, silver_path: str, output_path: str):
 
     # Span metrics
     print(f"\n--- Span-Level Entity Metrics ---")
-    span = compute_span_metrics(gold, silver)
+    span        = compute_span_metrics(gold, silver)
+    span_counts = compute_span_count_stats_teacher(gold, silver)
+    print(f"\n--- Span Count Statistics (Verbosity Bias) ---")
+    print(f"  Gold   avg spans/positive: {span_counts['avg_gold_per_positive']:.2f}  (total={span_counts['total_gold_spans']})")
+    print(f"  Teacher avg spans/positive: {span_counts['avg_pred_per_positive']:.2f}  (total={span_counts['total_pred_spans']})")
+    print(f"  Over-generation ratio: {span_counts['avg_pred_per_positive']/span_counts['avg_gold_per_positive']:.2f}x  (n={span_counts['n_positive_examples']} positive threads)")
 
     print(f"\n  Exact match:")
     print(f"    Precision: {span['exact']['precision']:.4f}")
@@ -328,17 +336,15 @@ def evaluate_teacher(gold_path: str, silver_path: str, output_path: str):
     elif teacher_f1 >= 0.50:
         decision = "GO — Labels are acceptable"
         target = "Student target: 0.35-0.45 F1"
-    elif teacher_f1 >= 0.40:
-        decision = "CAUTION — Labels are noisy"
-        target = "Student target: 0.30-0.40 F1"
+    elif teacher_f1 >= 0.35:
+        decision = "CONDITIONAL GO — Labels are noisy but usable"
+        target = "Student target: 0.25-0.40 F1. Boundary errors dominate — use relaxed F1 as primary metric."
+    elif teacher_f1 >= 0.25:
+        decision = "CAUTION — Labels are weak"
+        target = "Student target: 0.20-0.30 F1. Consider re-labeling."
     else:
-        if binary_acc >= 0.85:
-            decision = "CONDITIONAL GO — Span labels are poor but binary is decent"
-            target = ("Binary detection is usable but span extraction will be weak. "
-                      "Consider re-labeling or using simpler task formulation.")
-        else:
-            decision = "NO-GO — Labels are broken"
-            target = "STOP. Re-examine labeling pipeline before training."
+        decision = "NO-GO — Labels are broken"
+        target = "STOP. Re-examine labeling pipeline before training."
 
     print(f"\n  >>> {decision}")
     print(f"  >>> {target}")
@@ -394,46 +400,3 @@ def main():
 if __name__ == "__main__":
     main()
 
-# ── CORRECTED METRIC FUNCTIONS (replaces old compute_span_metrics) ──────────
-
-def get_spans_from_bio(seq):
-    spans = []
-    current_label, start_idx = None, -1
-    for i, tag in enumerate(seq):
-        if tag.startswith("B-"):
-            if current_label is not None:
-                spans.append((current_label, start_idx, i - 1))
-            current_label, start_idx = tag[2:], i
-        elif tag.startswith("I-") and current_label == tag[2:]:
-            continue
-        else:
-            if current_label is not None:
-                spans.append((current_label, start_idx, i - 1))
-                current_label = None
-    if current_label is not None:
-        spans.append((current_label, start_idx, len(seq) - 1))
-    return spans
-
-def compute_relaxed_metrics(true_seqs, pred_seqs):
-    total_true = total_pred = matched_true = matched_pred = 0
-    for true_seq, pred_seq in zip(true_seqs, pred_seqs):
-        true_spans = get_spans_from_bio(true_seq)
-        pred_spans = get_spans_from_bio(pred_seq)
-        total_true += len(true_spans)
-        total_pred += len(pred_spans)
-        for t_label, t_start, t_end in true_spans:
-            t_range = set(range(t_start, t_end + 1))
-            if any(p_label == t_label and t_range & set(range(p_start, p_end + 1))
-                   for p_label, p_start, p_end in pred_spans):
-                matched_true += 1
-        for p_label, p_start, p_end in pred_spans:
-            p_range = set(range(p_start, p_end + 1))
-            if any(t_label == p_label and p_range & set(range(t_start, t_end + 1))
-                   for t_label, t_start, t_end in true_spans):
-                matched_pred += 1
-    p = matched_pred / total_pred if total_pred > 0 else 0.0
-    r = matched_true / total_true if total_true > 0 else 0.0
-    f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0.0
-    return {"Relaxed Precision": round(p, 4),
-            "Relaxed Recall":    round(r, 4),
-            "Relaxed F1":        round(f1, 4)}

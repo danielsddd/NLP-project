@@ -1,17 +1,17 @@
 #!/bin/bash
 # =============================================================================
-# Model: dictabert_crf | Variant: P5_crf_thread_no_enriched
+# Model: dictabert_crf | Variant: P1_crf_seed123
 # =============================================================================
 
-#SBATCH --job-name=dict_P5_crf_thr
+#SBATCH --job-name=dict_P1_crf_wei
 #SBATCH --partition=studentkillable
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="titan_xp|geforce_rtx_2080"
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
 #SBATCH --time=10:00:00
-#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/dictabert_crf/%j_P5_crf_thread_no_enriched.out
-#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/dictabert_crf/%j_P5_crf_thread_no_enriched.err
+#SBATCH --output=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/dictabert_crf/%j_P1_crf_seed123.out
+#SBATCH --error=/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2/logs/slurm_output/dictabert_crf/%j_P1_crf_seed123.err
 
 # --- Environment ---
 USER_DIR="/vol/joberant_nobck/data/NLP_368307701_2526a/simanovsky2"
@@ -26,9 +26,9 @@ cd $PROJECT_DIR
 
 echo "=================================================="
 echo "MODEL:   dictabert_crf"
-echo "VARIANT: P5_crf_thread_no_enriched"
+echo "VARIANT: P1_crf_seed123"
 echo "HF:      dicta-il/dictabert"
-echo "OUTPUT:  models/checkpoints/dictabert_crf/P5_crf_thread_no_enriched"
+echo "OUTPUT:  models/checkpoints/dictabert_crf/P1_crf_seed123"
 echo "Job ID:  $SLURM_JOB_ID"
 echo "Node:    $(hostname)"
 echo "Start:   $(date)"
@@ -37,35 +37,34 @@ nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv 2>/dev/null ||
 echo "=================================================="
 
 # --- Data Check ---
-if [ ! -f "data/processed_thread_aware_no_enriched/train_merged.jsonl" ]; then
-    echo "ERROR: data/processed_thread_aware_no_enriched/train_merged.jsonl not found!"
+if [ ! -f "data/processed_v2/train_merged.jsonl" ]; then
+    echo "ERROR: data/processed_v2/train_merged.jsonl not found!"
     echo "Run the corresponding preprocessing script first."
     exit 1
 fi
-echo "Data:"; wc -l data/processed_thread_aware_no_enriched/train_merged.jsonl data/processed_thread_aware_no_enriched/val.jsonl
+echo "Data:"; wc -l data/processed_v2/train_merged.jsonl data/processed_v2/val.jsonl
 echo ""
 
-# --- P5: CRF + weights + thread-aware + no enriched ---
-mkdir -p models/checkpoints/dictabert_crf/P5_crf_thread_no_enriched
+# --- P1: CRF + class-weighted emissions ---
+mkdir -p models/checkpoints/dictabert_crf/P1_crf_seed123
 
 python -m src.models.train_joint \
     --model "dicta-il/dictabert" \
-    --data-dir data/processed_thread_aware_no_enriched \
+    --data-dir data/processed_v2 \
     --train-file train_merged.jsonl \
-    --output-dir models/checkpoints/dictabert_crf/P5_crf_thread_no_enriched \
+    --output-dir models/checkpoints/dictabert_crf/P1_crf_seed123 \
     --epochs 10 \
     --batch-size 16 \
     --lr 2e-5 \
-    --seed 42 \
-    --focal-gamma 2.0 \
-    --class-weights-file data/processed_thread_aware_no_enriched/stats_merged.json
+    --seed 123 \
+    --class-weights-file data/processed_v2/stats_merged.json
 
 EXIT_CODE=$?
 if [ $EXIT_CODE -eq 0 ]; then
     echo ""; echo "=================================================="
-    echo "SUCCESS — saved to: models/checkpoints/dictabert_crf/P5_crf_thread_no_enriched"
+    echo "SUCCESS — saved to: models/checkpoints/dictabert_crf/P1_crf_seed123"
     echo "=================================================="
-    for f in models/checkpoints/dictabert_crf/P5_crf_thread_no_enriched/training_summary.json models/checkpoints/dictabert_crf/P5_crf_thread_no_enriched/all_results.json; do
+    for f in models/checkpoints/dictabert_crf/P1_crf_seed123/training_summary.json models/checkpoints/dictabert_crf/P1_crf_seed123/all_results.json; do
         [ -f "$f" ] && echo "--- $f ---" && cat "$f" && echo ""
     done
 else

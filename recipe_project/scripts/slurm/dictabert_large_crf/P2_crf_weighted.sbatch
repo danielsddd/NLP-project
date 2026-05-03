@@ -30,4 +30,5 @@ python -m src.models.train_joint \
     --lr 2e-5 \
     --patience 3 \
     --seed 42 \
+    --focal-gamma 2.0 \
     --class-weights-file data/processed_v2/stats_merged.json

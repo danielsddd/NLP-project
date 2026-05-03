@@ -32,24 +32,6 @@ BIO_ID2LABEL = {
 }
 ASPECTS = ["SUBSTITUTION", "QUANTITY", "TECHNIQUE", "ADDITION"]
 
-
-def get_spans_from_io(seq):
-    """Extract (start, end, type) for IO tag sequences (no B- tags)."""
-    spans = []
-    i = 0
-    while i < len(seq):
-        tag = seq[i]
-        if tag != "O":
-            start = i
-            etype = tag[2:] if tag.startswith("I-") else tag
-            i += 1
-            while i < len(seq) and seq[i] == tag:
-                i += 1
-            spans.append((start, i, etype))
-        else:
-            i += 1
-    return spans
-
 def get_spans_from_bio(seq):
     spans = []
     current_label, start_idx = None, -1
