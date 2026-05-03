@@ -232,7 +232,7 @@ cp .env.example .env
 
 A Chrome extension that runs this model live on Hebrew YouTube recipe videos is available in `recipe-mod-extension-v2/ext2/`. It automatically scans comments, calls the HuggingFace Gradio API, and displays detected modifications in a dark-themed RTL sidebar.
 
-See the [dedicated README](../recipe-mod-extension-v2/README.md) for installation and usage instructions.
+See the dedicated readme for installation and usage instructions.
 
 ---
 
